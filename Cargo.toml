@@ -1,0 +1,54 @@
+[package]
+name = "quoracle"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+authors = ["Greg Burd <greg@burd.me>"]
+description = "A library for constructing and analyzing read-write quorum systems"
+repository = "https://github.com/gregburd/quoracle"
+license = "MIT OR Apache-2.0"
+keywords = ["distributed-systems", "quorum", "consensus", "optimization"]
+categories = ["algorithms", "mathematics"]
+
+[dependencies]
+thiserror = "2.0"
+good_lp = { version = "1.8", features = ["coin_cbc"] }
+itertools = "0.13"
+rand = "0.8"
+ahash = "0.8"
+
+[dev-dependencies]
+criterion = "0.5"
+proptest = "1.0"
+
+[[bench]]
+name = "benchmarks"
+harness = false
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Panic prevention
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+panic_in_result_fn = "deny"
+unimplemented = "deny"
+# No cheating
+allow_attributes = "deny"
+# Code hygiene
+dbg_macro = "deny"
+todo = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+# Safety
+await_holding_lock = "deny"
+large_futures = "deny"
+exit = "deny"
+mem_forget = "deny"
+# Pedantic relaxations (too noisy)
+module_name_repetitions = "allow"
+similar_names = "allow"
