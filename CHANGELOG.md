@@ -8,16 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.2.0] - 2026-03-05
 
 ### Changed
-- **Default LP solver changed from CBC to Clarabel** (Breaking: users requiring CBC must explicitly specify it)
-  - Clarabel is pure Rust (no C dependencies)
+- **Default LP solver changed from CBC to Microlp** (Breaking: users requiring CBC must explicitly specify it)
+  - Microlp is pure Rust (no C dependencies)
   - Silent by default (no verbose solver output)
-  - Good performance (competitive with CBC)
-  - Apache 2.0 license
+  - Supports both continuous and binary variables (required for resilience calculation)
+  - Slower than CBC but acceptable for most use cases
   - Drop-in replacement with identical results
 
 ### Added
 - SOLVERS.md documenting LP solver selection and performance comparison
 - Inline documentation for solver alternatives in Cargo.toml
+- Documentation explaining why Clarabel cannot be used (no binary variable support)
 
 ### Migration from 1.1.0
 
@@ -27,7 +28,7 @@ quoracle = { version = "1.2", default-features = false }
 good_lp = { version = "1.8", features = ["coin_cbc"] }
 ```
 
-Otherwise, Clarabel works as a drop-in replacement with no code changes needed.
+Otherwise, Microlp works as a drop-in replacement with no code changes needed.
 
 ## [1.1.0] - 2026-03-05
 

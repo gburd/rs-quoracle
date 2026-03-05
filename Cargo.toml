@@ -12,10 +12,10 @@ categories = ["algorithms", "mathematics"]
 
 [dependencies]
 thiserror = "2.0"
-# LP solver: Clarabel (pure Rust, silent) by default
+# LP solver: Microlp (pure Rust, silent, supports binary variables) by default
 # For best performance, use CBC: good_lp = { version = "1.8", features = ["coin_cbc"] }
-# For simplicity, use Microlp: good_lp = { version = "1.8", features = ["microlp"] }
-good_lp = { version = "1.8", features = ["clarabel"], default-features = false }
+# NOTE: Clarabel cannot be used - it doesn't support binary variables needed for resilience
+good_lp = { version = "1.8", features = ["microlp"], default-features = false }
 itertools = "0.13"
 rand = "0.8"
 ahash = "0.8"
