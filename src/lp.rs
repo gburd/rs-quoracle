@@ -5,12 +5,55 @@
 //! - Helper types for strategy optimization (used by `QuorumSystem`)
 
 use crate::error::{Error, Result};
-use good_lp::{
-    constraint, default_solver, variable, Expression, ProblemVariables, Solution, SolverModel,
-    Variable,
-};
+use crate::solver::Solver;
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
+
+// Import good_lp types from whichever solver backend is enabled
+#[cfg(feature = "cbc")]
+use good_lp_cbc::{
+    coin_cbc, constraint, variable, Expression, ProblemVariables, Solution, SolverModel, Variable,
+};
+#[cfg(all(not(feature = "cbc"), feature = "clarabel"))]
+use good_lp_clarabel::{
+    clarabel, constraint, variable, Expression, ProblemVariables, Solution, SolverModel, Variable,
+};
+#[cfg(all(not(feature = "cbc"), not(feature = "clarabel"), feature = "microlp"))]
+use good_lp_microlp::{
+    constraint, microlp, variable, Expression, ProblemVariables, Solution, SolverModel, Variable,
+};
+
+/// Macro to solve an LP problem with the selected solver backend.
+///
+/// This macro is needed because good_lp uses different types for each solver,
+/// and we need compile-time dispatch based on the runtime Solver value.
+macro_rules! solve_lp {
+    ($solver:expr, $vars:expr, $objective:expr, $problem_builder:expr) => {
+        match $solver {
+            #[cfg(feature = "cbc")]
+            Solver::Cbc => {
+                let mut problem = $problem_builder($vars.minimise($objective).using(coin_cbc));
+                problem
+                    .solve()
+                    .map_err(|e| Error::LpError(format!("CBC solver failed: {e}")))
+            }
+            #[cfg(feature = "clarabel")]
+            Solver::Clarabel => {
+                let mut problem = $problem_builder($vars.minimise($objective).using(clarabel));
+                problem
+                    .solve()
+                    .map_err(|e| Error::LpError(format!("Clarabel solver failed: {e}")))
+            }
+            #[cfg(feature = "microlp")]
+            Solver::Microlp => {
+                let mut problem = $problem_builder($vars.minimise($objective).using(microlp));
+                problem
+                    .solve()
+                    .map_err(|e| Error::LpError(format!("Microlp solver failed: {e}")))
+            }
+        }
+    };
+}
 
 /// Compute the size of the minimum hitting set for a collection
 /// of sets.
@@ -32,7 +75,7 @@ use std::hash::BuildHasher;
 ///
 /// Returns `Error::LpError` if `sets` is empty or if the LP solver
 /// fails to find a solution.
-pub fn min_hitting_set<T, S>(sets: &[HashSet<T, S>]) -> Result<usize>
+pub fn min_hitting_set<T, S>(sets: &[HashSet<T, S>], solver: Solver) -> Result<usize>
 where
     T: Eq + std::hash::Hash + Clone + Ord,
     S: BuildHasher,
@@ -67,21 +110,17 @@ where
         .values()
         .fold(Expression::default(), |acc, &v| acc + v);
 
-    let mut problem = vars.minimise(objective).using(default_solver);
-
-    // Constraint: each set must be "hit" by at least one selected
-    // element.
-    for set in sets {
-        let hit_sum: Expression = set
-            .iter()
-            .filter_map(|elem| elem_to_var.get(elem))
-            .fold(Expression::default(), |acc, &v| acc + v);
-        problem = problem.with(hit_sum.geq(1));
-    }
-
-    let solution = problem
-        .solve()
-        .map_err(|e| Error::LpError(format!("min_hitting_set solver failed: {e}")))?;
+    // Constraint: each set must be "hit" by at least one selected element.
+    let solution = solve_lp!(solver, vars, objective, |mut problem| {
+        for set in sets {
+            let hit_sum: Expression = set
+                .iter()
+                .filter_map(|elem| elem_to_var.get(elem))
+                .fold(Expression::default(), |acc, &v| acc + v);
+            problem = problem.with(hit_sum.geq(1));
+        }
+        problem
+    })?;
 
     // Sum the solution values (each is 0.0 or 1.0 for binary vars).
     let count: f64 = elem_to_var.values().map(|v| solution.value(*v)).sum();
@@ -305,6 +344,7 @@ fn to_f64(n: usize) -> f64 {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::Solver;
 
     fn sets_from_vecs<T: Eq + std::hash::Hash + Clone + Ord>(vecs: &[Vec<T>]) -> Vec<HashSet<T>> {
         vecs.iter().map(|v| v.iter().cloned().collect()).collect()
@@ -313,25 +353,25 @@ mod tests {
     #[test]
     fn hitting_set_single_element() {
         let sets = sets_from_vecs(&[vec!['a']]);
-        assert_eq!(min_hitting_set(&sets).unwrap(), 1);
+        assert_eq!(min_hitting_set(&sets, Solver::default()).unwrap(), 1);
     }
 
     #[test]
     fn hitting_set_disjoint() {
         let sets = sets_from_vecs(&[vec!['a'], vec!['b']]);
-        assert_eq!(min_hitting_set(&sets).unwrap(), 2);
+        assert_eq!(min_hitting_set(&sets, Solver::default()).unwrap(), 2);
     }
 
     #[test]
     fn hitting_set_overlapping() {
         let sets = sets_from_vecs(&[vec!['a', 'b'], vec!['b', 'c']]);
-        assert_eq!(min_hitting_set(&sets).unwrap(), 1);
+        assert_eq!(min_hitting_set(&sets, Solver::default()).unwrap(), 1);
     }
 
     #[test]
     fn hitting_set_empty_input() {
         let sets: Vec<HashSet<char>> = vec![];
-        assert!(min_hitting_set(&sets).is_err());
+        assert!(min_hitting_set(&sets, Solver::default()).is_err());
     }
 
     #[test]
@@ -339,7 +379,7 @@ mod tests {
         // Quorums of (a + b + c): {a}, {b}, {c}
         // Each singleton must be hit, so minimum is 3.
         let sets = sets_from_vecs(&[vec!['a'], vec!['b'], vec!['c']]);
-        assert_eq!(min_hitting_set(&sets).unwrap(), 3);
+        assert_eq!(min_hitting_set(&sets, Solver::default()).unwrap(), 3);
     }
 
     #[test]
@@ -347,7 +387,7 @@ mod tests {
         // Quorums of (a * b * c): {a, b, c}
         // Only one set, so hitting set size = 1.
         let sets = sets_from_vecs(&[vec!['a', 'b', 'c']]);
-        assert_eq!(min_hitting_set(&sets).unwrap(), 1);
+        assert_eq!(min_hitting_set(&sets, Solver::default()).unwrap(), 1);
     }
 
     #[test]
@@ -359,14 +399,14 @@ mod tests {
             vec!['b', 'c'],
             vec!['b', 'd'],
         ]);
-        assert_eq!(min_hitting_set(&sets).unwrap(), 2);
+        assert_eq!(min_hitting_set(&sets, Solver::default()).unwrap(), 2);
     }
 
     #[test]
     fn hitting_set_choose_2_of_3() {
         // choose(2, [a, b, c]): {a,b}, {a,c}, {b,c}
         let sets = sets_from_vecs(&[vec!['a', 'b'], vec!['a', 'c'], vec!['b', 'c']]);
-        assert_eq!(min_hitting_set(&sets).unwrap(), 2);
+        assert_eq!(min_hitting_set(&sets, Solver::default()).unwrap(), 2);
     }
 
     #[test]
@@ -380,7 +420,7 @@ mod tests {
             }
         }
         let sets = sets_from_vecs(&sets);
-        assert_eq!(min_hitting_set(&sets).unwrap(), 4);
+        assert_eq!(min_hitting_set(&sets, Solver::default()).unwrap(), 4);
     }
 
     #[test]
@@ -389,11 +429,11 @@ mod tests {
 
         // a + b: {a}, {b} => hitting=2, resilience=1
         let sets = sets_from_vecs(&[vec!['a'], vec!['b']]);
-        assert_eq!(min_hitting_set(&sets).unwrap() - 1, 1);
+        assert_eq!(min_hitting_set(&sets, Solver::default()).unwrap() - 1, 1);
 
         // a * b: {a,b} => hitting=1, resilience=0
         let sets = sets_from_vecs(&[vec!['a', 'b']]);
-        assert_eq!(min_hitting_set(&sets).unwrap() - 1, 0);
+        assert_eq!(min_hitting_set(&sets, Solver::default()).unwrap() - 1, 0);
 
         // (a + b) * (c + d) => hitting=2, resilience=1
         let sets = sets_from_vecs(&[
@@ -402,7 +442,7 @@ mod tests {
             vec!['b', 'c'],
             vec!['b', 'd'],
         ]);
-        assert_eq!(min_hitting_set(&sets).unwrap() - 1, 1);
+        assert_eq!(min_hitting_set(&sets, Solver::default()).unwrap() - 1, 1);
     }
 
     #[test]
@@ -414,7 +454,7 @@ mod tests {
             vec!['a', 'd'],
             vec!['a', 'd', 'e'],
         ]);
-        assert_eq!(min_hitting_set(&sets).unwrap(), 2);
+        assert_eq!(min_hitting_set(&sets, Solver::default()).unwrap(), 2);
     }
 
     #[test]

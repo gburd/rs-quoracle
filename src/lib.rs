@@ -48,6 +48,7 @@ pub mod geometry;
 pub mod lp;
 pub mod quorum_system;
 pub mod search;
+pub mod solver;
 
 // Re-export main types
 pub use distribution::Distribution;
@@ -55,3 +56,4 @@ pub use error::Error;
 pub use expr::{choose, majority, And, Choose, Element, Expr, Node, Or};
 pub use quorum_system::{Objective, QuorumSystem, Strategy};
 pub use search::search;
+pub use solver::Solver;
