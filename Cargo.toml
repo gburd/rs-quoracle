@@ -12,6 +12,7 @@ categories = ["algorithms", "mathematics"]
 
 [features]
 default = ["microlp"]
+# Mutually exclusive solver features - only enable one at a time
 microlp = ["good_lp/microlp"]
 cbc = ["good_lp/coin_cbc"]
 

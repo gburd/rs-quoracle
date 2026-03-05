@@ -10,9 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Feature flags for solver selection (`microlp`, `cbc`)
 - Enables easier testing across different solvers: `cargo test --features cbc`
+- Build-time check preventing both solver features from being enabled simultaneously
+
+### Fixed
+- Prevent solver conflicts when multiple features are enabled (e.g., `--all-features`)
+- Tests now fail cleanly at build time rather than hanging or producing wrong results
 
 ### Changed
 - Refactored Cargo.toml to use feature flags for solver selection
+- Added build.rs to enforce mutually exclusive solver features
 - No API changes, fully backward compatible
 
 ## [1.2.0] - 2026-03-05

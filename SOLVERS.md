@@ -79,6 +79,8 @@ cargo test --no-default-features --features cbc
 cargo test --no-default-features --features microlp
 ```
 
+**Note**: The solver features are mutually exclusive - only one can be enabled at a time. Running `cargo test --all-features` will fail with a build error. This prevents conflicts between solvers.
+
 ## Technical Details
 
 The solver choice is made at compile time via Cargo features. Quoracle uses the `good_lp` crate, which provides a unified interface to multiple solver backends. The API remains identical regardless of which solver you choose - only the backend implementation changes.
