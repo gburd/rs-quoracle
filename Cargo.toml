@@ -12,26 +12,13 @@ categories = ["algorithms", "mathematics"]
 
 [dependencies]
 thiserror = "2.0"
-good_lp = { version = "1.8", default-features = false, optional = true }
+# LP solver: Clarabel (pure Rust, silent) by default
+# For best performance, use CBC: good_lp = { version = "1.8", features = ["coin_cbc"] }
+# For simplicity, use Microlp: good_lp = { version = "1.8", features = ["microlp"] }
+good_lp = { version = "1.8", features = ["clarabel"], default-features = false }
 itertools = "0.13"
 rand = "0.8"
 ahash = "0.8"
-
-# Solver backends - at least one must be enabled
-good_lp_cbc = { package = "good_lp", version = "1.8", features = ["coin_cbc"], optional = true }
-good_lp_clarabel = { package = "good_lp", version = "1.8", features = ["clarabel"], optional = true }
-good_lp_microlp = { package = "good_lp", version = "1.8", features = ["microlp"], optional = true }
-
-[features]
-default = ["clarabel"]
-
-# Solver options (at least one must be enabled)
-cbc = ["good_lp_cbc"]
-clarabel = ["good_lp_clarabel"]
-microlp = ["good_lp_microlp"]
-
-# Convenience feature to enable all solvers
-all-solvers = ["cbc", "clarabel", "microlp"]
 
 [dev-dependencies]
 criterion = "0.5"

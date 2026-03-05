@@ -335,21 +335,11 @@ impl<T: Element> Expr<T> {
     /// For duplicate-free expressions, this is computed
     /// analytically. For expressions with duplicated elements, this
     /// requires solving a minimum hitting set problem via LP.
-    ///
-    /// Uses the default solver (Clarabel).
     pub fn resilience(&self) -> i64 {
-        self.resilience_with_solver(crate::Solver::default())
-    }
-
-    /// Calculate resilience using a specific solver.
-    ///
-    /// Resilience is the maximum number of node failures that can
-    /// be tolerated while still having at least one quorum available.
-    pub fn resilience_with_solver(&self, solver: crate::Solver) -> i64 {
         if self.dup_free() {
             self.dup_free_min_failures() - 1
         } else {
-            min_hitting_set(self.quorums(), solver) - 1
+            min_hitting_set(self.quorums()) - 1
         }
     }
 
@@ -441,15 +431,58 @@ fn choose_quorums<T: Element>(
 /// Solve the minimum hitting set problem via integer linear
 /// programming. Returns the size of the smallest set that
 /// intersects every quorum.
-fn min_hitting_set<T: Element>(quorums: impl Iterator<Item = HashSet<T>>, solver: crate::Solver) -> i64 {
-    let quorum_list: Vec<HashSet<T>> = quorums.collect();
+fn min_hitting_set<T: Element>(quorums: impl Iterator<Item = HashSet<T>>) -> i64 {
+    use good_lp::{
+        default_solver, variable, Expression, ProblemVariables, Solution, SolverModel, Variable,
+    };
 
-    // Use the shared implementation from lp module
-    match crate::lp::min_hitting_set(&quorum_list, solver) {
-        Ok(size) => {
+    let quorum_list: Vec<HashSet<T>> = quorums.collect();
+    if quorum_list.is_empty() {
+        return 0;
+    }
+
+    // Collect all unique elements
+    let all_elements: Vec<T> = quorum_list
+        .iter()
+        .flat_map(|q| q.iter().cloned())
+        .collect::<HashSet<T>>()
+        .into_iter()
+        .collect();
+
+    // Create binary variables, one per element
+    let mut vars = ProblemVariables::new();
+    let x: Vec<Variable> = all_elements
+        .iter()
+        .map(|_| vars.add(variable().binary()))
+        .collect();
+
+    // Build element -> variable index mapping
+    let elem_to_idx: std::collections::HashMap<&T, usize> = all_elements
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e, i))
+        .collect();
+
+    // Minimize sum of all variables
+    let objective: Expression = x.iter().copied().sum();
+    let mut problem = vars.minimise(objective).using(default_solver);
+
+    // For each quorum, at least one element must be in the
+    // hitting set
+    for quorum in &quorum_list {
+        let constraint: Expression = quorum
+            .iter()
+            .filter_map(|e| elem_to_idx.get(e).map(|&i| x[i]))
+            .sum();
+        problem = problem.with(constraint.geq(1));
+    }
+
+    match problem.solve() {
+        Ok(solution) => {
+            let total: f64 = x.iter().map(|&v| solution.value(v)).sum();
             #[allow(clippy::cast_possible_truncation)]
             {
-                size as i64
+                total.round() as i64
             }
         }
         Err(_) => 0,
