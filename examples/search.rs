@@ -2,6 +2,8 @@
 //!
 //! Run with: cargo run --example search
 
+#![allow(clippy::many_single_char_names, clippy::print_stdout)]
+
 use quoracle::search::{search, SearchConfig};
 use quoracle::*;
 use std::time::Duration;
@@ -30,7 +32,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Run search
-    let result = search(vec![a, b, c, d], config)?;
+    let nodes = vec![a, b, c, d];
+    let result = search(&nodes, &config)?;
 
     println!("Found optimal system!");
     println!("Resilience: {}", result.quorum_system.resilience());

@@ -432,7 +432,9 @@ fn choose_quorums<T: Element>(
 /// programming. Returns the size of the smallest set that
 /// intersects every quorum.
 fn min_hitting_set<T: Element>(quorums: impl Iterator<Item = HashSet<T>>) -> i64 {
-    use good_lp::*;
+    use good_lp::{
+        default_solver, variable, Expression, ProblemVariables, Solution, SolverModel, Variable,
+    };
 
     let quorum_list: Vec<HashSet<T>> = quorums.collect();
     if quorum_list.is_empty() {
@@ -478,7 +480,10 @@ fn min_hitting_set<T: Element>(quorums: impl Iterator<Item = HashSet<T>>) -> i64
     match problem.solve() {
         Ok(solution) => {
             let total: f64 = x.iter().map(|&v| solution.value(v)).sum();
-            total.round() as i64
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                total.round() as i64
+            }
         }
         Err(_) => 0,
     }
@@ -573,6 +578,7 @@ pub fn majority<T: Element>(exprs: Vec<Expr<T>>) -> Result<Expr<T>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::collections::HashSet;

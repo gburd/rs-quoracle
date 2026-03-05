@@ -110,15 +110,9 @@ fn benchmark_strategy_optimization(c: &mut Criterion) {
         let dist = Distribution::Fixed(0.5);
 
         b.iter(|| {
-            let strategy = qs.strategy(
-                Objective::Load,
-                Some(&dist),
-                None,
-                None,
-                None,
-                None,
-                0,
-            ).unwrap();
+            let strategy = qs
+                .strategy(Objective::Load, Some(&dist), None, None, None, None, 0)
+                .unwrap();
             black_box(strategy)
         });
     });
@@ -131,15 +125,9 @@ fn benchmark_strategy_optimization(c: &mut Criterion) {
         let dist = Distribution::Fixed(0.5);
 
         b.iter(|| {
-            let strategy = qs.strategy(
-                Objective::Load,
-                Some(&dist),
-                None,
-                None,
-                None,
-                None,
-                0,
-            ).unwrap();
+            let strategy = qs
+                .strategy(Objective::Load, Some(&dist), None, None, None, None, 0)
+                .unwrap();
             black_box(strategy)
         });
     });
@@ -158,15 +146,9 @@ fn benchmark_load_calculation(c: &mut Criterion) {
         let expr = r1 + r2 + r3;
         let qs = QuorumSystem::from_reads(expr);
         let dist = Distribution::Fixed(0.5);
-        let strategy = qs.strategy(
-            Objective::Load,
-            Some(&dist),
-            None,
-            None,
-            None,
-            None,
-            0,
-        ).unwrap();
+        let strategy = qs
+            .strategy(Objective::Load, Some(&dist), None, None, None, None, 0)
+            .unwrap();
 
         b.iter(|| {
             let load = strategy.load(Some(&dist), None).unwrap();
@@ -188,7 +170,7 @@ fn benchmark_search(c: &mut Criterion) {
         };
 
         b.iter(|| {
-            let result = search(nodes.clone(), config.clone());
+            let result = search(&nodes, &config);
             black_box(result)
         });
     });

@@ -2,6 +2,13 @@
 //!
 //! Run with: cargo run --example simple
 
+#![allow(
+    clippy::many_single_char_names,
+    clippy::print_stdout,
+    clippy::wildcard_imports,
+    clippy::uninlined_format_args
+)]
+
 use quoracle::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,8 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   writes (the dual) require one from each row
     println!("Creating grid quorum system...");
     let grid = QuorumSystem::from_reads(
-        (a.clone() * b.clone() * c.clone())
-            + (d.clone() * e.clone() * f.clone()),
+        (a.clone() * b.clone() * c.clone()) + (d.clone() * e.clone() * f.clone()),
     );
 
     // Resilience: how many node failures can the system
@@ -33,15 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Find the load-optimal strategy for 50% reads.
     println!("Finding optimal strategy for 50% reads...");
     let fr = Distribution::fixed(0.5)?;
-    let strategy = grid.strategy(
-        Objective::Load,
-        Some(&fr),
-        None,
-        None,
-        None,
-        None,
-        0,
-    )?;
+    let strategy = grid.strategy(Objective::Load, Some(&fr), None, None, None, None, 0)?;
 
     let load = strategy.load(Some(&fr), None)?;
     println!("Optimal load: {:.4}", load);
@@ -51,15 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Load at different read fractions:");
     for frac in [0.0, 0.25, 0.5, 0.75, 1.0] {
         let d = Distribution::fixed(frac)?;
-        let s = grid.strategy(
-            Objective::Load,
-            Some(&d),
-            None,
-            None,
-            None,
-            None,
-            0,
-        )?;
+        let s = grid.strategy(Objective::Load, Some(&d), None, None, None, None, 0)?;
         let l = s.load(Some(&d), None)?;
         println!("  fr={:.2}: load={:.4}", frac, l);
     }

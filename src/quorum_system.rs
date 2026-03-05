@@ -28,14 +28,14 @@ pub enum Objective {
 /// Used as a key in strategy probability maps.
 type Quorum<T> = Vec<T>;
 
-/// Convert a HashSet to a sorted Quorum (Vec).
+/// Convert a `HashSet` to a sorted Quorum (`Vec`).
 fn to_quorum<T: Element>(set: HashSet<T>) -> Quorum<T> {
     let mut vec: Vec<T> = set.into_iter().collect();
     vec.sort();
     vec
 }
 
-/// Convert a Quorum (Vec) back to a HashSet.
+/// Convert a Quorum (`Vec`) back to a `HashSet`.
 fn from_quorum<T: Element>(quorum: Quorum<T>) -> HashSet<T> {
     quorum.into_iter().collect()
 }
@@ -77,6 +77,10 @@ impl<T: Element> QuorumSystem<T> {
     ///
     /// Validates that every read quorum intersects every write
     /// quorum.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if read and write quorums don't overlap.
     pub fn new(reads: Expr<T>, writes: Expr<T>) -> Result<Self> {
         let optimal_writes = reads.dual();
         for wq in writes.quorums() {
@@ -119,6 +123,10 @@ impl<T: Element> QuorumSystem<T> {
     }
 
     /// Look up a node by its element identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not found in the quorum system.
     pub fn node(&self, x: &T) -> Result<&Node<T>> {
         self.x_to_node.get(x).ok_or_else(|| {
             Error::InvalidQuorumSystem(format!("element {x} not found in quorum system"))
@@ -166,6 +174,10 @@ impl<T: Element> QuorumSystem<T> {
 
     /// Build a uniform strategy: equal probability for each
     /// minimal quorum.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if strategy creation fails.
     pub fn uniform_strategy(&self, f: usize) -> Result<Strategy<T>> {
         let (read_quorums, write_quorums) = if f == 0 {
             (
@@ -188,7 +200,9 @@ impl<T: Element> QuorumSystem<T> {
         let read_quorums = minimize(read_quorums);
         let write_quorums = minimize(write_quorums);
 
+        #[allow(clippy::cast_precision_loss)]
         let rn = read_quorums.len() as f64;
+        #[allow(clippy::cast_precision_loss)]
         let wn = write_quorums.len() as f64;
 
         let sigma_r: BTreeMap<Quorum<T>, f64> = read_quorums
@@ -205,6 +219,10 @@ impl<T: Element> QuorumSystem<T> {
 
     /// Build a strategy from explicit quorum probability maps.
     /// Weights are normalized to sum to 1.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if quorums are invalid or weights are negative.
     pub fn make_strategy(
         &self,
         sigma_r: BTreeMap<Quorum<T>, f64>,
@@ -246,6 +264,11 @@ impl<T: Element> QuorumSystem<T> {
     }
 
     /// Compute the optimal strategy via linear programming.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if distribution canonicalization or LP solving fails.
+    #[allow(clippy::too_many_arguments)]
     pub fn strategy(
         &self,
         objective: Objective,
@@ -340,6 +363,7 @@ impl<T: Element> QuorumSystem<T> {
 
     /// Find all f-resilient quorums: quorums that remain valid
     /// even after removing any f elements.
+    #[allow(clippy::unused_self)]
     fn f_resilient_quorums(&self, f: usize, xs: &[T], expr: &Expr<T>) -> Vec<HashSet<T>> {
         let mut results = Vec::new();
         let mut current = HashSet::new();
@@ -383,6 +407,7 @@ impl<T: Element> QuorumSystem<T> {
     }
 
     /// Solve the LP to find an optimal strategy.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn lp_optimal_strategy(
         &self,
         read_quorums: &[HashSet<T>],
@@ -393,7 +418,9 @@ impl<T: Element> QuorumSystem<T> {
         network_limit: Option<f64>,
         latency_limit: Option<Duration>,
     ) -> Result<Strategy<T>> {
-        use good_lp::*;
+        use good_lp::{
+            default_solver, variable, Expression, ProblemVariables, Solution, SolverModel, Variable,
+        };
 
         let mut vars = ProblemVariables::new();
 
@@ -427,12 +454,22 @@ impl<T: Element> QuorumSystem<T> {
             let read_part: Expression = read_quorums
                 .iter()
                 .zip(r.iter())
-                .map(|(rq, &v)| Expression::from(v) * rq.len() as f64)
+                .map(|(rq, &v)| {
+                    #[allow(clippy::cast_precision_loss)]
+                    {
+                        Expression::from(v) * rq.len() as f64
+                    }
+                })
                 .sum();
             let write_part: Expression = write_quorums
                 .iter()
                 .zip(w.iter())
-                .map(|(wq, &v)| Expression::from(v) * wq.len() as f64)
+                .map(|(wq, &v)| {
+                    #[allow(clippy::cast_precision_loss)]
+                    {
+                        Expression::from(v) * wq.len() as f64
+                    }
+                })
                 .sum();
             avg_fr * read_part + (1.0 - avg_fr) * write_part
         };
@@ -641,6 +678,10 @@ impl<T: Element> Strategy<T> {
     }
 
     /// Compute the load for a given distribution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if distribution canonicalization fails.
     pub fn load(
         &self,
         read_fraction: Option<&Distribution>,
@@ -651,6 +692,10 @@ impl<T: Element> Strategy<T> {
     }
 
     /// Compute capacity (inverse load) for a distribution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if distribution canonicalization fails.
     pub fn capacity(
         &self,
         read_fraction: Option<&Distribution>,
@@ -661,6 +706,10 @@ impl<T: Element> Strategy<T> {
     }
 
     /// Compute the expected network load (quorum size).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if distribution canonicalization fails.
     pub fn network_load(
         &self,
         read_fraction: Option<&Distribution>,
@@ -671,17 +720,31 @@ impl<T: Element> Strategy<T> {
         let reads: f64 = self
             .sigma_r
             .iter()
-            .map(|(rq, &p)| p * rq.len() as f64)
+            .map(|(rq, &p)| {
+                #[allow(clippy::cast_precision_loss)]
+                {
+                    p * rq.len() as f64
+                }
+            })
             .sum();
         let writes: f64 = self
             .sigma_w
             .iter()
-            .map(|(wq, &p)| p * wq.len() as f64)
+            .map(|(wq, &p)| {
+                #[allow(clippy::cast_precision_loss)]
+                {
+                    p * wq.len() as f64
+                }
+            })
             .sum();
         Ok(fr * reads + (1.0 - fr) * writes)
     }
 
     /// Compute the expected latency.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if distribution canonicalization fails.
     pub fn latency(
         &self,
         read_fraction: Option<&Distribution>,
@@ -716,6 +779,10 @@ impl<T: Element> Strategy<T> {
     }
 
     /// Compute the load on a specific node for a distribution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if distribution canonicalization fails.
     pub fn node_load(
         &self,
         node: &Node<T>,
@@ -729,6 +796,10 @@ impl<T: Element> Strategy<T> {
     }
 
     /// Compute the utilization of a node for a distribution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if distribution canonicalization fails.
     pub fn node_utilization(
         &self,
         node: &Node<T>,
@@ -746,6 +817,10 @@ impl<T: Element> Strategy<T> {
     }
 
     /// Compute the throughput for a node under a distribution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if distribution canonicalization fails.
     pub fn node_throughput(
         &self,
         node: &Node<T>,
@@ -836,7 +911,7 @@ impl<T: Element> std::fmt::Display for Strategy<T> {
 /// Remove non-minimal sets: keep only sets that are not
 /// supersets of any other set in the collection.
 fn minimize<T: Element>(mut sets: Vec<HashSet<T>>) -> Vec<HashSet<T>> {
-    sets.sort_by_key(|s| s.len());
+    sets.sort_by_key(std::collections::HashSet::len);
     let mut minimal: Vec<HashSet<T>> = Vec::new();
     for s in sets {
         if !minimal.iter().any(|m| s.is_superset(m)) {
@@ -858,6 +933,12 @@ fn sample_quorum<T: Element>(sigma: &BTreeMap<Quorum<T>, f64>) -> HashSet<T> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::used_underscore_binding
+)]
 mod tests {
     use super::*;
     use crate::expr::Node;
@@ -936,8 +1017,8 @@ mod tests {
     fn elements_returns_all() {
         let qs = QuorumSystem::from_reads(n("a") + n("b"));
         let elems = qs.elements();
-        assert!(elems.contains(&"a".to_string()));
-        assert!(elems.contains(&"b".to_string()));
+        assert!(elems.contains("a"));
+        assert!(elems.contains("b"));
     }
 
     #[test]
@@ -1166,6 +1247,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)]
     fn strategy_latency() {
         let a = node_with("a", 1.0, 1.0, 1);
         let b = node_with("b", 1.0, 1.0, 2);

@@ -50,6 +50,10 @@ pub enum Distribution {
 
 impl Distribution {
     /// Create a fixed distribution with a single read fraction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `read_fraction` is not in [0.0, 1.0].
     pub fn fixed(read_fraction: f64) -> Result<Self> {
         validate_fraction(read_fraction)?;
         Ok(Self::Fixed(read_fraction))
@@ -58,6 +62,11 @@ impl Distribution {
     /// Create a weighted distribution from pairs of
     /// `(read_fraction, weight)`. Validates but does not
     /// normalize; call [`Distribution::canonicalize`] for normalization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any fraction is not in [0.0, 1.0], any weight
+    /// is negative, or the weights slice is empty.
     pub fn weighted(weights: &[(f64, f64)]) -> Result<Self> {
         if weights.is_empty() {
             return Err(Error::InvalidDistribution(
@@ -96,6 +105,10 @@ impl Distribution {
     /// Canonicalize this distribution into a map of
     /// `read_fraction -> probability` where probabilities
     /// sum to 1.0. Zero-weight entries are excluded.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the total weight is zero (for weighted distributions).
     pub fn canonicalize(&self) -> Result<Canonical> {
         match self {
             Self::Fixed(f) => {
@@ -143,6 +156,11 @@ impl TryFrom<i32> for Distribution {
 ///
 /// When `write_fraction` is provided, each fraction `fw` is
 /// converted to a read fraction as `1.0 - fw`.
+///
+/// # Errors
+///
+/// Returns an error if both parameters are `None`, both are `Some`,
+/// or if canonicalization of the provided distribution fails.
 pub fn canonicalize_rw(
     read_fraction: Option<&Distribution>,
     write_fraction: Option<&Distribution>,
@@ -180,6 +198,12 @@ fn validate_fraction(f: f64) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::used_underscore_binding
+)]
 mod tests {
     use super::*;
 

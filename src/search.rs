@@ -17,46 +17,45 @@ use std::time::{Duration, Instant};
 /// - `[[1, 3], [2]]`
 /// - `[[2, 3], [1]]`
 /// - `[[1, 2, 3]]`
+fn partitionings_helper<T: Clone>(xs: &[T]) -> Vec<Vec<Vec<T>>> {
+    if xs.is_empty() {
+        return vec![vec![]];
+    }
+
+    let x = xs[0].clone();
+    let rest = &xs[1..];
+    let mut result = Vec::new();
+
+    for partition in partitionings_helper(rest) {
+        // Add x as a singleton partition
+        let mut new_partition = vec![vec![x.clone()]];
+        new_partition.extend(partition.clone());
+        result.push(new_partition);
+
+        // Add x to each existing partition
+        for i in 0..partition.len() {
+            let mut new_partition = Vec::new();
+            for (j, part) in partition.iter().enumerate() {
+                if i == j {
+                    let mut new_part = vec![x.clone()];
+                    new_part.extend(part.clone());
+                    new_partition.push(new_part);
+                } else {
+                    new_partition.push(part.clone());
+                }
+            }
+            result.push(new_partition);
+        }
+    }
+
+    result
+}
+
 fn partitionings<T: Clone>(xs: &[T]) -> Vec<Vec<Vec<T>>> {
     if xs.is_empty() {
         return vec![];
     }
-
-    fn helper<T: Clone>(xs: &[T]) -> Vec<Vec<Vec<T>>> {
-        if xs.is_empty() {
-            return vec![vec![]];
-        }
-
-        let x = xs[0].clone();
-        let rest = &xs[1..];
-        let mut result = Vec::new();
-
-        for partition in helper(rest) {
-            // Add x as a singleton partition
-            let mut new_partition = vec![vec![x.clone()]];
-            new_partition.extend(partition.clone());
-            result.push(new_partition);
-
-            // Add x to each existing partition
-            for i in 0..partition.len() {
-                let mut new_partition = Vec::new();
-                for (j, part) in partition.iter().enumerate() {
-                    if i == j {
-                        let mut new_part = vec![x.clone()];
-                        new_part.extend(part.clone());
-                        new_partition.push(new_part);
-                    } else {
-                        new_partition.push(part.clone());
-                    }
-                }
-                result.push(new_partition);
-            }
-        }
-
-        result
-    }
-
-    helper(xs)
+    partitionings_helper(xs)
 }
 
 /// Generate all duplicate-free expressions over nodes.
@@ -191,7 +190,7 @@ pub struct SearchResult<T: Element> {
 ///
 /// Returns `Error::NoQuorumSystemFound` if no valid system satisfying
 /// the constraints is found within the timeout.
-pub fn search<T: Element>(nodes: Vec<Node<T>>, config: SearchConfig) -> Result<SearchResult<T>> {
+pub fn search<T: Element>(nodes: &[Node<T>], config: &SearchConfig) -> Result<SearchResult<T>> {
     let start_time = Instant::now();
 
     let mut opt_qs: Option<QuorumSystem<T>> = None;
@@ -248,7 +247,7 @@ pub fn search<T: Element>(nodes: Vec<Node<T>>, config: SearchConfig) -> Result<S
                         }
                     }
                 }
-                Err(Error::NoStrategyFound) | Err(_) => continue,
+                Err(Error::NoStrategyFound | _) => continue,
             }
 
             // Check timeout
@@ -260,7 +259,7 @@ pub fn search<T: Element>(nodes: Vec<Node<T>>, config: SearchConfig) -> Result<S
     };
 
     // Quick pass with height ≤ 2
-    let exprs_h2 = dup_free_exprs(&nodes, 2);
+    let exprs_h2 = dup_free_exprs(nodes, 2);
     if do_search(exprs_h2) {
         // Timed out during height 2 search
         return match (opt_qs, opt_strategy) {
@@ -273,7 +272,7 @@ pub fn search<T: Element>(nodes: Vec<Node<T>>, config: SearchConfig) -> Result<S
     }
 
     // Full search with unlimited height
-    let exprs = dup_free_exprs(&nodes, 0);
+    let exprs = dup_free_exprs(nodes, 0);
     do_search(exprs);
 
     match (opt_qs, opt_strategy) {
@@ -286,6 +285,7 @@ pub fn search<T: Element>(nodes: Vec<Node<T>>, config: SearchConfig) -> Result<S
 }
 
 #[cfg(test)]
+#[allow(clippy::cloned_ref_to_slice_refs)]
 mod tests {
     use super::*;
 
@@ -351,7 +351,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result = search(vec![a, b, c], config);
+        let nodes = vec![a, b, c];
+        let result = search(&nodes, &config);
         assert!(result.is_ok());
     }
 
@@ -366,7 +367,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result = search(vec![a], config);
+        let nodes = vec![a];
+        let result = search(&nodes, &config);
         assert!(result.is_err());
     }
 }
