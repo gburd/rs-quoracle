@@ -16,7 +16,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-quoracle = "0.1"
+quoracle = "1.1"
 ```
 
 ## Quick Start
@@ -183,6 +183,27 @@ Both implementations:
 - Use CBC solver backend
 - Are production-ready
 - Have comprehensive tests
+
+## Future Work
+
+While Quoracle focuses on read-write quorum systems, related research areas exist:
+
+### Chain Replication (Out of Scope)
+
+Chain replication (e.g., Machi, Hibari) provides linearizable distributed storage through ordered replica chains. While powerful, chain replication is fundamentally incompatible with quorum-based approaches:
+
+- **Chains**: Ordered replicas (head/tail roles), sequential updates, single-node reads
+- **Quorums**: Unordered replicas, parallel operations, set-based reads/writes
+
+Modeling chains as degenerate quorums would lose essential chain semantics (ordering, linearizability guarantees). Each approach is optimal for different use cases and should be analyzed with purpose-built tools.
+
+### Potential Extensions
+
+Potential future work within the quorum system domain:
+- Custom optimization metrics beyond load/capacity/latency
+- Network topology awareness (per-link costs)
+- Dynamic reconfiguration support
+- Extended heterogeneous node modeling
 
 ## Contributing
 
