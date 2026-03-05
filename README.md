@@ -117,18 +117,18 @@ pip install -r requirements.txt
 python benchmarks.py
 ```
 
-See [BENCHMARKS.md](BENCHMARKS.md) for detailed performance comparison between Rust and Python implementations.
+See [BENCHMARKS.md](BENCHMARKS.md) for benchmarking methodology and [COMPARISON.md](COMPARISON.md) for detailed Rust vs Python performance analysis.
 
 ## Performance
 
 The Rust implementation provides significant performance improvements over the Python version:
 
 - **3-10× faster** for quorum enumeration and iteration
-- **2-5× faster** for load calculations
-- **2-8× faster** for heuristic search
-- **Similar performance** for LP optimization (both use CBC solver)
+- **2-10× faster** for load calculations
+- **3-10× faster** for heuristic search
+- **~1.5× faster** for LP optimization (both use CBC solver)
 
-See [BENCHMARKS.md](BENCHMARKS.md) for comprehensive benchmarking details.
+See [PERFORMANCE.md](PERFORMANCE.md) for measured results and [COMPARISON.md](COMPARISON.md) for detailed Rust vs Python analysis.
 
 ## Documentation
 
