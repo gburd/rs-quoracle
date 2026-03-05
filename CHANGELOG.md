@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-03-05
+
+### Changed
+- **Default LP solver changed from CBC to Clarabel** (Breaking: users requiring CBC must explicitly specify it)
+  - Clarabel is pure Rust (no C dependencies)
+  - Silent by default (no verbose solver output)
+  - Good performance (competitive with CBC)
+  - Apache 2.0 license
+  - Drop-in replacement with identical results
+
+### Added
+- SOLVERS.md documenting LP solver selection and performance comparison
+- Inline documentation for solver alternatives in Cargo.toml
+
+### Migration from 1.1.0
+
+To keep using CBC (for maximum performance):
+```toml
+quoracle = { version = "1.2", default-features = false }
+good_lp = { version = "1.8", features = ["coin_cbc"] }
+```
+
+Otherwise, Clarabel works as a drop-in replacement with no code changes needed.
+
 ## [1.1.0] - 2026-03-05
 
 ### Added

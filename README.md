@@ -16,8 +16,10 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-quoracle = "1.1"
+quoracle = "1.2"
 ```
+
+The default uses the **Clarabel** solver (pure Rust, silent output). For alternatives, see [SOLVERS.md](SOLVERS.md).
 
 ## Quick Start
 
