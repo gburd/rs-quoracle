@@ -74,6 +74,9 @@ cargo test
 
 # Test with CBC
 cargo test --no-default-features --features cbc
+
+# Or explicitly test Microlp
+cargo test --no-default-features --features microlp
 ```
 
 ## Technical Details

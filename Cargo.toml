@@ -1,6 +1,6 @@
 [package]
 name = "quoracle"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2021"
 rust-version = "1.70"
 authors = ["Greg Burd <greg@burd.me>"]
@@ -10,12 +10,17 @@ license = "MIT OR Apache-2.0"
 keywords = ["distributed-systems", "quorum", "consensus", "optimization"]
 categories = ["algorithms", "mathematics"]
 
+[features]
+default = ["microlp"]
+microlp = ["good_lp/microlp"]
+cbc = ["good_lp/coin_cbc"]
+
 [dependencies]
 thiserror = "2.0"
 # LP solver: Microlp (pure Rust, silent, supports binary variables) by default
 # For best performance, use CBC: good_lp = { version = "1.8", features = ["coin_cbc"] }
 # NOTE: Clarabel cannot be used - it doesn't support binary variables needed for resilience
-good_lp = { version = "1.8", features = ["microlp"], default-features = false }
+good_lp = { version = "1.8", default-features = false }
 itertools = "0.13"
 rand = "0.8"
 ahash = "0.8"
