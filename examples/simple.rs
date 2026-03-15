@@ -39,7 +39,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Find the load-optimal strategy for 50% reads.
     println!("Finding optimal strategy for 50% reads...");
     let fr = Distribution::fixed(0.5)?;
-    let strategy = grid.strategy(Objective::Load, Some(&fr), None, None, None, None, 0)?;
+    let limits = StrategyLimits::default();
+    let strategy = grid.strategy(Objective::Load, Some(&fr), None, &limits, 0)?;
 
     let load = strategy.load(Some(&fr), None)?;
     println!("Optimal load: {:.4}", load);
@@ -49,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Load at different read fractions:");
     for frac in [0.0, 0.25, 0.5, 0.75, 1.0] {
         let d = Distribution::fixed(frac)?;
-        let s = grid.strategy(Objective::Load, Some(&d), None, None, None, None, 0)?;
+        let s = grid.strategy(Objective::Load, Some(&d), None, &limits, 0)?;
         let l = s.load(Some(&d), None)?;
         println!("  fr={:.2}: load={:.4}", frac, l);
     }

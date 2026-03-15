@@ -1,0 +1,22 @@
+[book]
+title = "Quoracle"
+authors = ["Greg Burd"]
+description = "A library for constructing and analyzing read-write quorum systems"
+language = "en"
+multilingual = false
+src = "docs/src"
+
+[build]
+build-dir = "docs/book"
+
+[output.html]
+git-repository-url = "https://github.com/gregburd/quoracle"
+edit-url-template = "https://github.com/gregburd/quoracle/edit/main/docs/src/{path}"
+site-url = "/quoracle/"
+
+[output.html.fold]
+enable = true
+level = 0
+
+[output.html.playground]
+editable = false

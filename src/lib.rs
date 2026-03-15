@@ -29,9 +29,10 @@
 //!
 //! // Find the load-optimal strategy for 50% reads.
 //! let fr = Distribution::fixed(0.5).unwrap();
+//! let limits = StrategyLimits::default();
 //! let strategy = qs.strategy(
 //!     Objective::Load,
-//!     Some(&fr), None, None, None, None, 0,
+//!     Some(&fr), None, &limits, 0,
 //! ).unwrap();
 //!
 //! let load = strategy.load(Some(&fr), None).unwrap();
@@ -53,5 +54,5 @@ pub mod search;
 pub use distribution::Distribution;
 pub use error::Error;
 pub use expr::{choose, majority, And, Choose, Element, Expr, Node, Or};
-pub use quorum_system::{Objective, QuorumSystem, Strategy};
+pub use quorum_system::{Objective, QuorumSystem, Strategy, StrategyLimits};
 pub use search::search;

@@ -6,7 +6,7 @@
 use crate::distribution::Distribution;
 use crate::error::{Error, Result};
 use crate::expr::{choose, Element, Expr, Node};
-use crate::quorum_system::{Objective, QuorumSystem, Strategy};
+use crate::quorum_system::{Objective, QuorumSystem, Strategy, StrategyLimits};
 use std::time::{Duration, Instant};
 
 /// Generate all partitionings of a list.
@@ -225,13 +225,17 @@ pub fn search<T: Element>(nodes: &[Node<T>], config: &SearchConfig) -> Result<Se
                 continue;
             }
 
+            let limits = StrategyLimits {
+                load: config.load_limit,
+                network: config.network_limit,
+                latency: config.latency_limit,
+            };
+
             match qs.strategy(
                 config.optimize,
                 config.read_fraction.as_ref(),
                 config.write_fraction.as_ref(),
-                config.load_limit,
-                config.network_limit,
-                config.latency_limit,
+                &limits,
                 config.f,
             ) {
                 Ok(strategy) => {

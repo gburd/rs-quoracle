@@ -133,7 +133,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Optimal strategy for fr=0.25.
-    let opt = grid.strategy(Objective::Load, Some(&fr025), None, None, None, None, 0)?;
+    let limits = StrategyLimits::default();
+    let opt = grid.strategy(Objective::Load, Some(&fr025), None, &limits, 0)?;
     println!(
         "\nOptimal load(fr=0.25): {:.6}",
         opt.load(Some(&fr025), None)?
@@ -153,7 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== Workload Distributions ===\n");
 
     let dist = Distribution::weighted(&[(0.1, 0.5), (0.75, 0.5)])?;
-    let sigma = grid.strategy(Objective::Load, Some(&dist), None, None, None, None, 0)?;
+    let sigma = grid.strategy(Objective::Load, Some(&dist), None, &limits, 0)?;
     println!("load(distribution): {:.6}", sigma.load(Some(&dist), None)?);
 
     // ---- Heterogeneous Nodes ----
@@ -171,7 +172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         a.clone() * b.clone() * c.clone() + d.clone() * e.clone() * f.clone(),
     );
     let fr075 = Distribution::fixed(0.75)?;
-    let s2 = grid2.strategy(Objective::Load, Some(&fr075), None, None, None, None, 0)?;
+    let s2 = grid2.strategy(Objective::Load, Some(&fr075), None, &limits, 0)?;
     println!("load(fr=0.75):     {:.6}", s2.load(Some(&fr075), None)?);
     println!("capacity(fr=0.75): {:.2}", s2.capacity(Some(&fr075), None)?);
 
@@ -189,19 +190,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "\ncapacity(fr=1.0): {:.2}",
         grid3
-            .strategy(Objective::Load, Some(&fr1), None, None, None, None, 0)?
+            .strategy(Objective::Load, Some(&fr1), None, &limits, 0)?
             .capacity(Some(&fr1), None)?
     );
     println!(
         "capacity(fr=0.5): {:.2}",
         grid3
-            .strategy(Objective::Load, Some(&fr05), None, None, None, None, 0)?
+            .strategy(Objective::Load, Some(&fr05), None, &limits, 0)?
             .capacity(Some(&fr05), None)?
     );
     println!(
         "capacity(fr=0.0): {:.2}",
         grid3
-            .strategy(Objective::Load, Some(&fr0), None, None, None, None, 0)?
+            .strategy(Objective::Load, Some(&fr0), None, &limits, 0)?
             .capacity(Some(&fr0), None)?
     );
 
@@ -242,19 +243,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let grid4 = QuorumSystem::from_reads(a * b * c + d * e * f);
 
-    let lat_opt = grid4.strategy(Objective::Latency, Some(&fr05), None, None, None, None, 0)?;
+    let lat_opt = grid4.strategy(Objective::Latency, Some(&fr05), None, &limits, 0)?;
     println!("latency(fr=1.0): {:?}", lat_opt.latency(Some(&fr1), None)?);
     println!("latency(fr=0.0): {:?}", lat_opt.latency(Some(&fr0), None)?);
     println!("latency(fr=0.5): {:?}", lat_opt.latency(Some(&fr05), None)?);
 
     // Latency-optimal with load constraint.
+    let load_constrained_limits = StrategyLimits {
+        load: Some(1.0 / 1500.0),
+        ..Default::default()
+    };
     let lat_constrained = grid4.strategy(
         Objective::Latency,
         Some(&fr05),
         None,
-        Some(1.0 / 1500.0),
-        None,
-        None,
+        &load_constrained_limits,
         0,
     )?;
     println!("\nLatency-optimal with load <= 1/1500:");
@@ -268,13 +271,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Load-optimal with latency constraint.
+    let latency_constrained_limits = StrategyLimits {
+        latency: Some(secs(4)),
+        ..Default::default()
+    };
     let load_constrained = grid4.strategy(
         Objective::Load,
         Some(&fr05),
         None,
-        None,
-        None,
-        Some(secs(4)),
+        &latency_constrained_limits,
         0,
     )?;
     println!("\nLoad-optimal with latency <= 4s:");
@@ -291,7 +296,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== Network Load ===\n");
 
-    let net_opt = grid4.strategy(Objective::Network, Some(&fr05), None, None, None, None, 0)?;
+    let net_opt = grid4.strategy(Objective::Network, Some(&fr05), None, &limits, 0)?;
     println!(
         "network_load(fr=0.5): {:.4}",
         net_opt.network_load(Some(&fr05), None)?

@@ -24,6 +24,17 @@ pub enum Objective {
     Latency,
 }
 
+/// Optional constraints for strategy optimization.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StrategyLimits {
+    /// Maximum load limit.
+    pub load: Option<f64>,
+    /// Maximum network load limit (expected quorum size).
+    pub network: Option<f64>,
+    /// Maximum latency limit.
+    pub latency: Option<Duration>,
+}
+
 /// A quorum represented as a sorted vector of elements.
 /// Used as a key in strategy probability maps.
 type Quorum<T> = Vec<T>;
@@ -268,32 +279,29 @@ impl<T: Element> QuorumSystem<T> {
     /// # Errors
     ///
     /// Returns an error if distribution canonicalization or LP solving fails.
-    #[allow(clippy::too_many_arguments)]
     pub fn strategy(
         &self,
         objective: Objective,
         read_fraction: Option<&Distribution>,
         write_fraction: Option<&Distribution>,
-        load_limit: Option<f64>,
-        network_limit: Option<f64>,
-        latency_limit: Option<Duration>,
+        limits: &StrategyLimits,
         f: usize,
     ) -> Result<Strategy<T>> {
-        if objective == Objective::Load && load_limit.is_some() {
+        if objective == Objective::Load && limits.load.is_some() {
             return Err(Error::InvalidQuorumSystem(
                 "a load limit cannot be set when \
                  optimizing for load"
                     .into(),
             ));
         }
-        if objective == Objective::Network && network_limit.is_some() {
+        if objective == Objective::Network && limits.network.is_some() {
             return Err(Error::InvalidQuorumSystem(
                 "a network limit cannot be set when \
                  optimizing for network"
                     .into(),
             ));
         }
-        if objective == Objective::Latency && latency_limit.is_some() {
+        if objective == Objective::Latency && limits.latency.is_some() {
             return Err(Error::InvalidQuorumSystem(
                 "a latency limit cannot be set when \
                  optimizing for latency"
@@ -323,9 +331,7 @@ impl<T: Element> QuorumSystem<T> {
             &write_quorums,
             &d,
             objective,
-            load_limit,
-            network_limit,
-            latency_limit,
+            limits,
         )
     }
 
@@ -406,47 +412,170 @@ impl<T: Element> QuorumSystem<T> {
         }
     }
 
-    /// Solve the LP to find an optimal strategy.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-    fn lp_optimal_strategy(
-        &self,
+    /// Create LP variables for read/write quorum probabilities and element mappings.
+    fn create_lp_quorum_variables(
         read_quorums: &[HashSet<T>],
         write_quorums: &[HashSet<T>],
-        read_fraction: &Canonical,
-        objective: Objective,
-        load_limit: Option<f64>,
-        network_limit: Option<f64>,
-        latency_limit: Option<Duration>,
-    ) -> Result<Strategy<T>> {
-        use good_lp::{
-            default_solver, variable, Expression, ProblemVariables, Solution, SolverModel, Variable,
-        };
+        vars: &mut good_lp::ProblemVariables,
+    ) -> (
+        Vec<good_lp::Variable>,
+        Vec<good_lp::Variable>,
+        HashMap<T, Vec<good_lp::Variable>>,
+        HashMap<T, Vec<good_lp::Variable>>,
+    ) {
+        use good_lp::variable;
 
-        let mut vars = ProblemVariables::new();
-
-        // Create variables for read/write quorum probabilities.
-        let r_vars: Vec<Variable> = (0..read_quorums.len())
+        let r_vars: Vec<good_lp::Variable> = (0..read_quorums.len())
             .map(|_| vars.add(variable().min(0.0).max(1.0)))
             .collect();
-        let w_vars: Vec<Variable> = (0..write_quorums.len())
+        let w_vars: Vec<good_lp::Variable> = (0..write_quorums.len())
             .map(|_| vars.add(variable().min(0.0).max(1.0)))
             .collect();
 
-        // Map each element to its read/write quorum variables.
-        let mut x_to_r_vars: HashMap<T, Vec<Variable>> = HashMap::new();
+        let mut x_to_r_vars: HashMap<T, Vec<good_lp::Variable>> = HashMap::new();
         for (i, rq) in read_quorums.iter().enumerate() {
             for x in rq {
                 x_to_r_vars.entry(x.clone()).or_default().push(r_vars[i]);
             }
         }
-        let mut x_to_w_vars: HashMap<T, Vec<Variable>> = HashMap::new();
+
+        let mut x_to_w_vars: HashMap<T, Vec<good_lp::Variable>> = HashMap::new();
         for (i, wq) in write_quorums.iter().enumerate() {
             for x in wq {
                 x_to_w_vars.entry(x.clone()).or_default().push(w_vars[i]);
             }
         }
 
-        // Weighted average fr for network/latency expressions.
+        (r_vars, w_vars, x_to_r_vars, x_to_w_vars)
+    }
+
+    /// Create load variables for each read fraction in the canonical distribution.
+    fn create_load_info_variables(
+        read_fraction: &Canonical,
+        vars: &mut good_lp::ProblemVariables,
+    ) -> Vec<(OrderedFloat, f64, good_lp::Variable)> {
+        use good_lp::variable;
+
+        read_fraction
+            .iter()
+            .map(|(&fr_key, &p)| {
+                let l = vars.add(variable().min(0.0));
+                (fr_key, p, l)
+            })
+            .collect()
+    }
+
+    /// Add probability sum constraints (read and write probabilities must sum to 1).
+    fn add_probability_sum_constraints(
+        mut problem: good_lp::SolverModel,
+        r_vars: &[good_lp::Variable],
+        w_vars: &[good_lp::Variable],
+    ) -> good_lp::SolverModel {
+        use good_lp::Expression;
+
+        let r_sum: Expression = r_vars.iter().copied().sum();
+        problem = problem.with(r_sum.eq(1.0));
+
+        let w_sum: Expression = w_vars.iter().copied().sum();
+        problem = problem.with(w_sum.eq(1.0));
+
+        problem
+    }
+
+    /// Add load constraints for each node at each read fraction.
+    fn add_node_load_constraints(
+        &self,
+        mut problem: good_lp::SolverModel,
+        load_info: &[(OrderedFloat, f64, good_lp::Variable)],
+        x_to_r_vars: &HashMap<T, Vec<good_lp::Variable>>,
+        x_to_w_vars: &HashMap<T, Vec<good_lp::Variable>>,
+    ) -> good_lp::SolverModel {
+        use good_lp::Expression;
+
+        let all_nodes: Vec<Node<T>> = self.nodes().into_iter().collect();
+
+        for &(fr_key, _, l) in load_info {
+            let fr = fr_key.0;
+            for node in &all_nodes {
+                let x = &node.x;
+                let mut x_load = Expression::from(0.0);
+
+                if let Some(vs) = x_to_r_vars.get(x) {
+                    let rsum: Expression = vs.iter().copied().sum();
+                    x_load += rsum * (fr / node.read_capacity);
+                }
+
+                if let Some(vs) = x_to_w_vars.get(x) {
+                    let wsum: Expression = vs.iter().copied().sum();
+                    x_load += wsum * ((1.0 - fr) / node.write_capacity);
+                }
+
+                problem = problem.with(x_load.leq(l));
+            }
+        }
+
+        problem
+    }
+
+    /// Extract strategy from LP solution by filtering non-zero quorum probabilities.
+    fn extract_strategy_from_solution(
+        &self,
+        solution: &good_lp::Solution,
+        read_quorums: &[HashSet<T>],
+        write_quorums: &[HashSet<T>],
+        r_vars: &[good_lp::Variable],
+        w_vars: &[good_lp::Variable],
+    ) -> Result<Strategy<T>> {
+        let sigma_r: BTreeMap<Quorum<T>, f64> = read_quorums
+            .iter()
+            .zip(r_vars.iter())
+            .filter_map(|(rq, &v)| {
+                let val = solution.value(v);
+                if val > 1e-10 {
+                    Some((to_quorum(rq.clone()), val))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let sigma_w: BTreeMap<Quorum<T>, f64> = write_quorums
+            .iter()
+            .zip(w_vars.iter())
+            .filter_map(|(wq, &v)| {
+                let val = solution.value(v);
+                if val > 1e-10 {
+                    Some((to_quorum(wq.clone()), val))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(Strategy::new(self, sigma_r, sigma_w))
+    }
+
+    /// Solve the LP to find an optimal strategy.
+    fn lp_optimal_strategy(
+        &self,
+        read_quorums: &[HashSet<T>],
+        write_quorums: &[HashSet<T>],
+        read_fraction: &Canonical,
+        objective: Objective,
+        limits: &StrategyLimits,
+    ) -> Result<Strategy<T>> {
+        use good_lp::{default_solver, Expression, ProblemVariables, Variable};
+
+        let mut vars = ProblemVariables::new();
+
+        // Create LP variables for quorum probabilities and element mappings.
+        let (r_vars, w_vars, x_to_r_vars, x_to_w_vars) =
+            Self::create_lp_quorum_variables(read_quorums, write_quorums, &mut vars);
+
+        // Create load variables for each read fraction.
+        let load_info = Self::create_load_info_variables(read_fraction, &mut vars);
+
+        // Calculate weighted average read fraction for network/latency expressions.
         let avg_fr: f64 = read_fraction.iter().map(|(k, &p)| k.0 * p).sum();
 
         // Build network load expression.
@@ -495,13 +624,6 @@ impl<T: Element> QuorumSystem<T> {
             avg_fr * read_part + (1.0 - avg_fr) * write_part
         };
 
-        // Build load variables upfront.
-        let mut load_info: Vec<(OrderedFloat, f64, Variable)> = Vec::new();
-        for (&fr_key, &p) in read_fraction {
-            let l = vars.add(variable().min(0.0));
-            load_info.push((fr_key, p, l));
-        }
-
         // Build objective expression.
         let obj: Expression = match objective {
             Objective::Load => load_info
@@ -512,82 +634,39 @@ impl<T: Element> QuorumSystem<T> {
             Objective::Latency => latency_expr(&r_vars, &w_vars),
         };
 
+        // Create LP problem with objective.
         let mut problem = vars.minimise(obj).using(default_solver);
 
-        // Constraint: read/write probabilities sum to 1.
-        let r_sum: Expression = r_vars.iter().copied().sum();
-        problem = problem.with(r_sum.eq(1.0));
-        let w_sum: Expression = w_vars.iter().copied().sum();
-        problem = problem.with(w_sum.eq(1.0));
+        // Add probability sum constraints.
+        problem = Self::add_probability_sum_constraints(problem, &r_vars, &w_vars);
 
-        // Add load constraints for each fr.
-        let all_nodes: Vec<Node<T>> = self.nodes().into_iter().collect();
-        for &(fr_key, _, l) in &load_info {
-            let fr = fr_key.0;
-            for node in &all_nodes {
-                let x = &node.x;
-                let mut x_load = Expression::from(0.0);
-                if let Some(vs) = x_to_r_vars.get(x) {
-                    let rsum: Expression = vs.iter().copied().sum();
-                    x_load += rsum * (fr / node.read_capacity);
-                }
-                if let Some(vs) = x_to_w_vars.get(x) {
-                    let wsum: Expression = vs.iter().copied().sum();
-                    x_load += wsum * ((1.0 - fr) / node.write_capacity);
-                }
-                problem = problem.with(x_load.leq(l));
-            }
-        }
+        // Add load constraints for each node.
+        problem = self.add_node_load_constraints(problem, &load_info, &x_to_r_vars, &x_to_w_vars);
 
-        // Add optional constraints.
-        if let Some(ll) = load_limit {
+        // Add optional limit constraints.
+        if let Some(ll) = limits.load {
             let load_expr: Expression = load_info
                 .iter()
                 .map(|&(_, p, l)| Expression::from(l) * p)
                 .sum();
             problem = problem.with(load_expr.leq(ll));
         }
-        if let Some(nl) = network_limit {
+        if let Some(nl) = limits.network {
             let ne = network_expr(&r_vars, &w_vars);
             problem = problem.with(ne.leq(nl));
         }
-        if let Some(ll) = latency_limit {
+        if let Some(ll) = limits.latency {
             let le = latency_expr(&r_vars, &w_vars);
             problem = problem.with(le.leq(ll.as_secs_f64()));
         }
 
-        // Solve.
+        // Solve the LP problem.
         let solution = problem
             .solve()
             .map_err(|e| Error::LpError(format!("{e}")))?;
 
-        // Extract non-zero quorum probabilities.
-        let sigma_r: BTreeMap<Quorum<T>, f64> = read_quorums
-            .iter()
-            .zip(r_vars.iter())
-            .filter_map(|(rq, &v)| {
-                let val = solution.value(v);
-                if val > 1e-10 {
-                    Some((to_quorum(rq.clone()), val))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let sigma_w: BTreeMap<Quorum<T>, f64> = write_quorums
-            .iter()
-            .zip(w_vars.iter())
-            .filter_map(|(wq, &v)| {
-                let val = solution.value(v);
-                if val > 1e-10 {
-                    Some((to_quorum(wq.clone()), val))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        Ok(Strategy::new(self, sigma_r, sigma_w))
+        // Extract strategy from solution.
+        self.extract_strategy_from_solution(&solution, read_quorums, write_quorums, &r_vars, &w_vars)
     }
 
     fn build_node_map(reads: &Expr<T>, writes: &Expr<T>) -> HashMap<T, Node<T>> {

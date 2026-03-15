@@ -109,9 +109,10 @@ fn benchmark_strategy_optimization(c: &mut Criterion) {
         let qs = QuorumSystem::from_reads(expr);
         let dist = Distribution::Fixed(0.5);
 
+        let limits = StrategyLimits::default();
         b.iter(|| {
             let strategy = qs
-                .strategy(Objective::Load, Some(&dist), None, None, None, None, 0)
+                .strategy(Objective::Load, Some(&dist), None, &limits, 0)
                 .unwrap();
             black_box(strategy)
         });
@@ -123,10 +124,11 @@ fn benchmark_strategy_optimization(c: &mut Criterion) {
         let expr = majority(nodes).unwrap();
         let qs = QuorumSystem::from_reads(expr);
         let dist = Distribution::Fixed(0.5);
+        let limits = StrategyLimits::default();
 
         b.iter(|| {
             let strategy = qs
-                .strategy(Objective::Load, Some(&dist), None, None, None, None, 0)
+                .strategy(Objective::Load, Some(&dist), None, &limits, 0)
                 .unwrap();
             black_box(strategy)
         });
@@ -146,8 +148,9 @@ fn benchmark_load_calculation(c: &mut Criterion) {
         let expr = r1 + r2 + r3;
         let qs = QuorumSystem::from_reads(expr);
         let dist = Distribution::Fixed(0.5);
+        let limits = StrategyLimits::default();
         let strategy = qs
-            .strategy(Objective::Load, Some(&dist), None, None, None, None, 0)
+            .strategy(Objective::Load, Some(&dist), None, &limits, 0)
             .unwrap();
 
         b.iter(|| {
