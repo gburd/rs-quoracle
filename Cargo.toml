@@ -6,9 +6,25 @@ rust-version = "1.70"
 authors = ["Greg Burd <greg@burd.me>"]
 description = "A library for constructing and analyzing read-write quorum systems"
 repository = "https://github.com/gregburd/quoracle"
+homepage = "https://github.com/gregburd/quoracle"
+documentation = "https://docs.rs/quoracle"
+readme = "README.md"
 license = "MIT OR Apache-2.0"
 keywords = ["distributed-systems", "quorum", "consensus", "optimization"]
 categories = ["algorithms", "mathematics"]
+
+# Exclude unnecessary files from published crate
+exclude = [
+    "_/*",              # Python reference implementation
+    ".github/*",        # CI configuration
+    "benches/*",        # Benchmarks (users typically don't need these)
+    "*.md",             # Exclude all markdown files
+    "!README.md",       # But keep README.md
+    ".gitignore",
+    "flake.nix",
+    ".envrc",
+    "deny.toml",
+]
 
 [features]
 default = ["microlp"]

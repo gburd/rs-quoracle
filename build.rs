@@ -1,3 +1,7 @@
+//! Build script for quoracle.
+//!
+//! Enforces mutually exclusive solver features (microlp or cbc).
+
 fn main() {
     // Ensure only one solver feature is enabled
     let microlp = cfg!(feature = "microlp");

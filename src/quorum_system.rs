@@ -466,11 +466,11 @@ impl<T: Element> QuorumSystem<T> {
     }
 
     /// Add probability sum constraints (read and write probabilities must sum to 1).
-    fn add_probability_sum_constraints(
-        mut problem: good_lp::SolverModel,
+    fn add_probability_sum_constraints<S: good_lp::SolverModel>(
+        mut problem: S,
         r_vars: &[good_lp::Variable],
         w_vars: &[good_lp::Variable],
-    ) -> good_lp::SolverModel {
+    ) -> S {
         use good_lp::Expression;
 
         let r_sum: Expression = r_vars.iter().copied().sum();
@@ -483,13 +483,13 @@ impl<T: Element> QuorumSystem<T> {
     }
 
     /// Add load constraints for each node at each read fraction.
-    fn add_node_load_constraints(
+    fn add_node_load_constraints<S: good_lp::SolverModel>(
         &self,
-        mut problem: good_lp::SolverModel,
+        mut problem: S,
         load_info: &[(OrderedFloat, f64, good_lp::Variable)],
         x_to_r_vars: &HashMap<T, Vec<good_lp::Variable>>,
         x_to_w_vars: &HashMap<T, Vec<good_lp::Variable>>,
-    ) -> good_lp::SolverModel {
+    ) -> S {
         use good_lp::Expression;
 
         let all_nodes: Vec<Node<T>> = self.nodes().into_iter().collect();
@@ -520,7 +520,7 @@ impl<T: Element> QuorumSystem<T> {
     /// Extract strategy from LP solution by filtering non-zero quorum probabilities.
     fn extract_strategy_from_solution(
         &self,
-        solution: &good_lp::Solution,
+        solution: &impl good_lp::Solution,
         read_quorums: &[HashSet<T>],
         write_quorums: &[HashSet<T>],
         r_vars: &[good_lp::Variable],
@@ -564,7 +564,7 @@ impl<T: Element> QuorumSystem<T> {
         objective: Objective,
         limits: &StrategyLimits,
     ) -> Result<Strategy<T>> {
-        use good_lp::{default_solver, Expression, ProblemVariables, Variable};
+        use good_lp::{default_solver, Expression, ProblemVariables, SolverModel, Variable};
 
         let mut vars = ProblemVariables::new();
 

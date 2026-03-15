@@ -36,13 +36,12 @@ let qs = QuorumSystem::from_reads(a + b + c);
 
 // Find optimal strategy
 let dist = Distribution::Fixed(0.5);
+let limits = StrategyLimits::default(); // No constraints
 let strategy = qs.strategy(
     Objective::Load,      // Minimize load
     Some(&dist),          // Read fraction
     None,                 // Write fraction (inferred)
-    None,                 // No load limit
-    None,                 // No network limit
-    None,                 // No latency limit
+    &limits,              // Optional constraints
     0,                    // f-resilience
 )?;
 

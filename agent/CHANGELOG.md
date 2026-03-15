@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `StrategyLimits` struct for cleaner constraint specification
+- License files: `LICENSE-MIT` and `LICENSE-APACHE-2.0`
+- Supply chain security with `cargo-deny` configuration (`deny.toml`)
+- Nix flake for reproducible builds and NixOS integration
+- mdBook documentation site (deployed to GitHub Pages)
+- Comprehensive examples in documentation
+- Performance benchmarks documentation
+- CI check for dependency vulnerabilities with `cargo deny`
+
+### Changed
+- **API Improvement**: `strategy()` method now takes `&StrategyLimits` instead of 3 separate Option parameters
+  - Before: `strategy(obj, rf, wf, load_limit, net_limit, lat_limit, f)`
+  - After: `strategy(obj, rf, wf, &limits, f)`
+- Refactored `lp_optimal_strategy()` from 181 lines into focused helper functions
+- Updated all examples and tests to use new `StrategyLimits` API
+- Enhanced `Cargo.toml` with crates.io metadata (readme, homepage, documentation, exclude)
+
+### Fixed
+- Reduced parameter count in public API from 7 to 5 (cleaner interface)
+- All functions now ≤100 lines (removed clippy allow annotations)
+
+### Documentation
+- Complete mdBook guide with quick start, examples, and performance data
+- API reference linking to docs.rs
+- GitHub Pages deployment via GitHub Actions
+- Added Nix usage documentation
+
 ## [1.2.1] - 2026-03-05
 
 ### Added
