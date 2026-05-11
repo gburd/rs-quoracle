@@ -1,5 +1,7 @@
 //! Integration tests for the expression algebra module
 
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use quoracle::expr::{choose, majority, Node};
 use quoracle::Expr;
 use std::collections::HashSet;

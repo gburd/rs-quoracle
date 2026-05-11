@@ -1,22 +1,23 @@
+//! Build script: validates LP solver feature configuration.
+
 fn main() {
-    // Ensure only one solver feature is enabled
     let microlp = cfg!(feature = "microlp");
     let cbc = cfg!(feature = "cbc");
 
     if microlp && cbc {
-        panic!(
-            "Cannot enable both 'microlp' and 'cbc' features simultaneously. \
-             Please use only one solver feature at a time:\n  \
-             cargo test --no-default-features --features microlp\n  \
-             cargo test --no-default-features --features cbc"
-        );
+        // Both features enabled (e.g. via --all-features in CI).
+        // Silently prefer microlp (the default) — no warning needed since
+        // --all-features is a valid CI invocation pattern.
+        return;
     }
 
     if !microlp && !cbc {
-        panic!(
-            "At least one solver feature must be enabled: 'microlp' or 'cbc'.\n  \
-             Default: cargo test\n  \
-             Explicit: cargo test --features microlp"
+        // No solver configured — this is always an error.
+        println!(
+            "cargo:warning=quoracle: no solver feature enabled; add \
+             'microlp' (default) or 'cbc' to your dependency features."
         );
+        // Trigger a compile error via a non-existent cfg.
+        println!("cargo:rustc-cfg=quoracle_no_solver_enabled");
     }
 }

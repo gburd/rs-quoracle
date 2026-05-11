@@ -1,3 +1,12 @@
+//! Criterion benchmarks for quoracle quorum system operations.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::wildcard_imports,
+    clippy::many_single_char_names,
+    missing_docs
+)]
+
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use quoracle::search::{search, SearchConfig};
 use quoracle::*;

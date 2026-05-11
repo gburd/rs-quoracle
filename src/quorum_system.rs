@@ -13,6 +13,14 @@ use rand::seq::SliceRandom;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
+/// LP variable maps returned by `create_lp_quorum_variables`.
+type LpVarMaps<T> = (
+    Vec<good_lp::Variable>,
+    Vec<good_lp::Variable>,
+    HashMap<T, Vec<good_lp::Variable>>,
+    HashMap<T, Vec<good_lp::Variable>>,
+);
+
 /// Optimization objective for strategy computation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Objective {
@@ -417,12 +425,7 @@ impl<T: Element> QuorumSystem<T> {
         read_quorums: &[HashSet<T>],
         write_quorums: &[HashSet<T>],
         vars: &mut good_lp::ProblemVariables,
-    ) -> (
-        Vec<good_lp::Variable>,
-        Vec<good_lp::Variable>,
-        HashMap<T, Vec<good_lp::Variable>>,
-        HashMap<T, Vec<good_lp::Variable>>,
-    ) {
+    ) -> LpVarMaps<T> {
         use good_lp::variable;
 
         let r_vars: Vec<good_lp::Variable> = (0..read_quorums.len())
@@ -466,11 +469,11 @@ impl<T: Element> QuorumSystem<T> {
     }
 
     /// Add probability sum constraints (read and write probabilities must sum to 1).
-    fn add_probability_sum_constraints(
-        mut problem: good_lp::SolverModel,
+    fn add_probability_sum_constraints<P: good_lp::SolverModel>(
+        mut problem: P,
         r_vars: &[good_lp::Variable],
         w_vars: &[good_lp::Variable],
-    ) -> good_lp::SolverModel {
+    ) -> P {
         use good_lp::Expression;
 
         let r_sum: Expression = r_vars.iter().copied().sum();
@@ -483,13 +486,13 @@ impl<T: Element> QuorumSystem<T> {
     }
 
     /// Add load constraints for each node at each read fraction.
-    fn add_node_load_constraints(
+    fn add_node_load_constraints<M: good_lp::SolverModel>(
         &self,
-        mut problem: good_lp::SolverModel,
+        mut problem: M,
         load_info: &[(OrderedFloat, f64, good_lp::Variable)],
         x_to_r_vars: &HashMap<T, Vec<good_lp::Variable>>,
         x_to_w_vars: &HashMap<T, Vec<good_lp::Variable>>,
-    ) -> good_lp::SolverModel {
+    ) -> M {
         use good_lp::Expression;
 
         let all_nodes: Vec<Node<T>> = self.nodes().into_iter().collect();
@@ -518,14 +521,14 @@ impl<T: Element> QuorumSystem<T> {
     }
 
     /// Extract strategy from LP solution by filtering non-zero quorum probabilities.
-    fn extract_strategy_from_solution(
+    fn extract_strategy_from_solution<S: good_lp::Solution>(
         &self,
-        solution: &good_lp::Solution,
+        solution: &S,
         read_quorums: &[HashSet<T>],
         write_quorums: &[HashSet<T>],
         r_vars: &[good_lp::Variable],
         w_vars: &[good_lp::Variable],
-    ) -> Result<Strategy<T>> {
+    ) -> Strategy<T> {
         let sigma_r: BTreeMap<Quorum<T>, f64> = read_quorums
             .iter()
             .zip(r_vars.iter())
@@ -552,7 +555,7 @@ impl<T: Element> QuorumSystem<T> {
             })
             .collect();
 
-        Ok(Strategy::new(self, sigma_r, sigma_w))
+        Strategy::new(self, sigma_r, sigma_w)
     }
 
     /// Solve the LP to find an optimal strategy.
@@ -564,7 +567,7 @@ impl<T: Element> QuorumSystem<T> {
         objective: Objective,
         limits: &StrategyLimits,
     ) -> Result<Strategy<T>> {
-        use good_lp::{default_solver, Expression, ProblemVariables, Variable};
+        use good_lp::{default_solver, Expression, ProblemVariables, SolverModel, Variable};
 
         let mut vars = ProblemVariables::new();
 
@@ -666,7 +669,7 @@ impl<T: Element> QuorumSystem<T> {
             .map_err(|e| Error::LpError(format!("{e}")))?;
 
         // Extract strategy from solution.
-        self.extract_strategy_from_solution(&solution, read_quorums, write_quorums, &r_vars, &w_vars)
+        Ok(self.extract_strategy_from_solution(&solution, read_quorums, write_quorums, &r_vars, &w_vars))
     }
 
     fn build_node_map(reads: &Expr<T>, writes: &Expr<T>) -> HashMap<T, Node<T>> {

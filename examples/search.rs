@@ -5,7 +5,7 @@
 #![allow(clippy::many_single_char_names, clippy::print_stdout)]
 
 use quoracle::search::{search, SearchConfig};
-use quoracle::*;
+use quoracle::{Distribution, Node, Objective};
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -41,8 +41,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let load = result
         .strategy
         .load(Some(&Distribution::Fixed(0.5)), None)?;
-    println!("Load: {:.4}", load);
-    println!("Capacity: {:.4}", 1.0 / load);
+    println!("Load: {load:.4}");
+    let capacity = 1.0 / load;
+    println!("Capacity: {capacity:.4}");
 
     println!("\n=== Search complete ===");
     Ok(())
