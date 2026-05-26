@@ -15,8 +15,9 @@
     clippy::stable_sort_primitive
 )]
 
+use hashbrown::HashSet;
 use quoracle::*;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 fn set<'a>(items: &[&'a str]) -> HashSet<&'a str> {
@@ -135,26 +136,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Optimal strategy for fr=0.25.
     let limits = StrategyLimits::default();
     let opt = grid.strategy(Objective::Load, Some(&fr025), None, &limits, 0)?;
-    println!(
-        "\nOptimal load(fr=0.25): {:.6}",
-        opt.load(Some(&fr025), None)?
-    );
+    println!("\nOptimal load(fr=0.25): {:.6}", opt.load(Some(&fr025), None)?);
     println!("load(fr=0.0):          {:.6}", opt.load(Some(&fr0), None)?);
     let fr05 = Distribution::fixed(0.5)?;
     println!("load(fr=0.5):          {:.6}", opt.load(Some(&fr05), None)?);
     println!("load(fr=1.0):          {:.6}", opt.load(Some(&fr1), None)?);
 
-    println!(
-        "\ncapacity(fr=0.25): {:.4}",
-        opt.capacity(Some(&fr025), None)?
-    );
+    println!("\ncapacity(fr=0.25): {:.4}", opt.capacity(Some(&fr025), None)?);
 
     // ---- Workload Distributions ----
 
     println!("\n=== Workload Distributions ===\n");
 
     let dist = Distribution::weighted(&[(0.1, 0.5), (0.75, 0.5)])?;
-    let sigma = grid.strategy(Objective::Load, Some(&dist), None, &limits, 0)?;
+    let sigma =
+        grid.strategy(Objective::Load, Some(&dist), None, &limits, 0)?;
     println!("load(distribution): {:.6}", sigma.load(Some(&dist), None)?);
 
     // ---- Heterogeneous Nodes ----
@@ -177,11 +173,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("capacity(fr=0.75): {:.2}", s2.capacity(Some(&fr075), None)?);
 
     // Asymmetric read/write capacities.
-    let a = Expr::Node(Node::new("a").with_read_write_capacity(10000.0, 1000.0));
+    let a =
+        Expr::Node(Node::new("a").with_read_write_capacity(10000.0, 1000.0));
     let b = Expr::Node(Node::new("b").with_read_write_capacity(5000.0, 500.0));
-    let c = Expr::Node(Node::new("c").with_read_write_capacity(10000.0, 1000.0));
+    let c =
+        Expr::Node(Node::new("c").with_read_write_capacity(10000.0, 1000.0));
     let d = Expr::Node(Node::new("d").with_read_write_capacity(5000.0, 500.0));
-    let e = Expr::Node(Node::new("e").with_read_write_capacity(10000.0, 1000.0));
+    let e =
+        Expr::Node(Node::new("e").with_read_write_capacity(10000.0, 1000.0));
     let f = Expr::Node(Node::new("f").with_read_write_capacity(5000.0, 500.0));
     let grid3 = QuorumSystem::from_reads(
         a.clone() * b.clone() * c.clone() + d.clone() * e.clone() * f.clone(),
@@ -243,16 +242,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let grid4 = QuorumSystem::from_reads(a * b * c + d * e * f);
 
-    let lat_opt = grid4.strategy(Objective::Latency, Some(&fr05), None, &limits, 0)?;
+    let lat_opt =
+        grid4.strategy(Objective::Latency, Some(&fr05), None, &limits, 0)?;
     println!("latency(fr=1.0): {:?}", lat_opt.latency(Some(&fr1), None)?);
     println!("latency(fr=0.0): {:?}", lat_opt.latency(Some(&fr0), None)?);
     println!("latency(fr=0.5): {:?}", lat_opt.latency(Some(&fr05), None)?);
 
     // Latency-optimal with load constraint.
-    let load_constrained_limits = StrategyLimits {
-        load: Some(1.0 / 1500.0),
-        ..Default::default()
-    };
+    let load_constrained_limits =
+        StrategyLimits { load: Some(1.0 / 1500.0), ..Default::default() };
     let lat_constrained = grid4.strategy(
         Objective::Latency,
         Some(&fr05),
@@ -261,20 +259,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         0,
     )?;
     println!("\nLatency-optimal with load <= 1/1500:");
-    println!(
-        "  capacity: {:.2}",
-        lat_constrained.capacity(Some(&fr05), None)?
-    );
-    println!(
-        "  latency:  {:?}",
-        lat_constrained.latency(Some(&fr05), None)?
-    );
+    println!("  capacity: {:.2}", lat_constrained.capacity(Some(&fr05), None)?);
+    println!("  latency:  {:?}", lat_constrained.latency(Some(&fr05), None)?);
 
     // Load-optimal with latency constraint.
-    let latency_constrained_limits = StrategyLimits {
-        latency: Some(secs(4)),
-        ..Default::default()
-    };
+    let latency_constrained_limits =
+        StrategyLimits { latency: Some(secs(4)), ..Default::default() };
     let load_constrained = grid4.strategy(
         Objective::Load,
         Some(&fr05),
@@ -287,16 +277,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  capacity: {:.2}",
         load_constrained.capacity(Some(&fr05), None)?
     );
-    println!(
-        "  latency:  {:?}",
-        load_constrained.latency(Some(&fr05), None)?
-    );
+    println!("  latency:  {:?}", load_constrained.latency(Some(&fr05), None)?);
 
     // ---- Network Load ----
 
     println!("\n=== Network Load ===\n");
 
-    let net_opt = grid4.strategy(Objective::Network, Some(&fr05), None, &limits, 0)?;
+    let net_opt =
+        grid4.strategy(Objective::Network, Some(&fr05), None, &limits, 0)?;
     println!(
         "network_load(fr=0.5): {:.4}",
         net_opt.network_load(Some(&fr05), None)?

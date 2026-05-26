@@ -25,6 +25,7 @@ good_lp = { version = "1.8", default-features = false }
 itertools = "0.13"
 rand = "0.8"
 ahash = "0.8"
+hashbrown = "0.15"
 
 [dev-dependencies]
 criterion = "0.5"

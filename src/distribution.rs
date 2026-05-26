@@ -5,7 +5,7 @@
 //! `fr` of the workload is reads and `1 - fr` is writes.
 
 use crate::error::{Error, Result};
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 /// Wrapper for `f64` that implements `Eq` and `Hash` via bit
 /// representation, enabling use as a `HashMap` key.
@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn ordered_float_eq_and_hash() {
-        use std::collections::HashSet;
+        use hashbrown::HashSet;
         let a = OrderedFloat(0.5);
         let b = OrderedFloat(0.5);
         assert_eq!(a, b);
@@ -294,7 +294,8 @@ mod tests {
 
     #[test]
     fn weighted_canonicalize_normalizes() {
-        let d = Distribution::weighted(&[(0.25, 1.0), (0.8, 2.0)]).expect("valid");
+        let d =
+            Distribution::weighted(&[(0.25, 1.0), (0.8, 2.0)]).expect("valid");
         let c = d.canonicalize().expect("valid");
 
         assert_eq!(c.len(), 2);
@@ -307,7 +308,8 @@ mod tests {
 
     #[test]
     fn weighted_canonicalize_excludes_zero_weight() {
-        let d = Distribution::weighted(&[(0.1, 0.0), (0.9, 3.0)]).expect("valid");
+        let d =
+            Distribution::weighted(&[(0.1, 0.0), (0.9, 3.0)]).expect("valid");
         let c = d.canonicalize().expect("valid");
         assert_eq!(c.len(), 1);
         assert!((c[&OrderedFloat(0.9)] - 1.0).abs() < f64::EPSILON);
@@ -360,7 +362,8 @@ mod tests {
 
     #[test]
     fn canonicalize_rw_write_fraction_weighted() {
-        let d = Distribution::weighted(&[(0.2, 1.0), (0.5, 1.0)]).expect("valid");
+        let d =
+            Distribution::weighted(&[(0.2, 1.0), (0.5, 1.0)]).expect("valid");
         let c = canonicalize_rw(None, Some(&d)).expect("valid");
         assert_eq!(c.len(), 2);
         // write 0.2 -> read 0.8, write 0.5 -> read 0.5

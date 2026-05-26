@@ -8,8 +8,8 @@
 //! - [`Choose`]: At least k children must be satisfied
 
 use crate::error::{Error, Result};
+use hashbrown::{HashMap, HashSet};
 use itertools::Itertools;
-use std::collections::HashSet;
 use std::fmt::{self, Debug, Display};
 use std::hash::Hash;
 use std::ops::{Add, Mul};
@@ -17,9 +17,15 @@ use std::time::Duration;
 
 /// Trait for types that can be used as node identifiers
 /// in quorum expressions.
-pub trait Element: Ord + Clone + Hash + Debug + Display + Send + Sync + 'static {}
+pub trait Element:
+    Ord + Clone + Hash + Debug + Display + Send + Sync + 'static
+{
+}
 
-impl<T> Element for T where T: Ord + Clone + Hash + Debug + Display + Send + Sync + 'static {}
+impl<T> Element for T where
+    T: Ord + Clone + Hash + Debug + Display + Send + Sync + 'static
+{
+}
 
 /// A node in a quorum system.
 #[derive(Debug, Clone)]
@@ -251,7 +257,9 @@ impl<T: Element> Expr<T> {
                 s.insert(node.x.clone());
                 Box::new(std::iter::once(s))
             }
-            Expr::Or(or) => Box::new(or.children.iter().flat_map(Expr::quorums)),
+            Expr::Or(or) => {
+                Box::new(or.children.iter().flat_map(Expr::quorums))
+            }
             Expr::And(and) => Box::new(and_quorums(&and.children)),
             Expr::Choose(ch) => Box::new(choose_quorums(ch.k, &ch.children)),
         }
@@ -265,7 +273,9 @@ impl<T: Element> Expr<T> {
             Expr::Node(node) => xs.contains(&node.x),
             Expr::Or(or) => or.children.iter().any(|e| e.is_quorum(xs)),
             Expr::And(and) => and.children.iter().all(|e| e.is_quorum(xs)),
-            Expr::Choose(ch) => ch.children.iter().filter(|e| e.is_quorum(xs)).count() >= ch.k,
+            Expr::Choose(ch) => {
+                ch.children.iter().filter(|e| e.is_quorum(xs)).count() >= ch.k
+            }
         }
     }
 
@@ -286,8 +296,12 @@ impl<T: Element> Expr<T> {
                 s
             }
             Expr::Or(or) => or.children.iter().flat_map(Expr::nodes).collect(),
-            Expr::And(and) => and.children.iter().flat_map(Expr::nodes).collect(),
-            Expr::Choose(ch) => ch.children.iter().flat_map(Expr::nodes).collect(),
+            Expr::And(and) => {
+                and.children.iter().flat_map(Expr::nodes).collect()
+            }
+            Expr::Choose(ch) => {
+                ch.children.iter().flat_map(Expr::nodes).collect()
+            }
         }
     }
 
@@ -311,10 +325,7 @@ impl<T: Element> Expr<T> {
             Expr::Choose(ch) => {
                 let duals = ch.children.iter().map(Expr::dual).collect();
                 let dual_k = ch.children.len() - ch.k + 1;
-                Expr::Choose(Choose {
-                    k: dual_k,
-                    children: duals,
-                })
+                Expr::Choose(Choose { k: dual_k, children: duals })
             }
         }
     }
@@ -359,7 +370,9 @@ impl<T: Element> Expr<T> {
     fn dup_free_min_failures(&self) -> i64 {
         match self {
             Expr::Node(_) => 1,
-            Expr::Or(or) => or.children.iter().map(Expr::dup_free_min_failures).sum(),
+            Expr::Or(or) => {
+                or.children.iter().map(Expr::dup_free_min_failures).sum()
+            }
             Expr::And(and) => and
                 .children
                 .iter()
@@ -382,7 +395,9 @@ impl<T: Element> Expr<T> {
 
 /// Compute quorums for an AND expression: cartesian product of
 /// child quorums, with set union.
-fn and_quorums<T: Element>(children: &[Expr<T>]) -> Box<dyn Iterator<Item = HashSet<T>> + '_> {
+fn and_quorums<T: Element>(
+    children: &[Expr<T>],
+) -> Box<dyn Iterator<Item = HashSet<T>> + '_> {
     if children.is_empty() {
         return Box::new(std::iter::empty());
     }
@@ -390,17 +405,14 @@ fn and_quorums<T: Element>(children: &[Expr<T>]) -> Box<dyn Iterator<Item = Hash
     let child_quorums: Vec<Vec<HashSet<T>>> =
         children.iter().map(|e| e.quorums().collect()).collect();
 
-    Box::new(
-        child_quorums
-            .into_iter()
-            .multi_cartesian_product()
-            .map(|subquorums| {
-                subquorums.into_iter().fold(HashSet::new(), |mut acc, q| {
-                    acc.extend(q);
-                    acc
-                })
-            }),
-    )
+    Box::new(child_quorums.into_iter().multi_cartesian_product().map(
+        |subquorums| {
+            subquorums.into_iter().fold(HashSet::new(), |mut acc, q| {
+                acc.extend(q);
+                acc
+            })
+        },
+    ))
 }
 
 /// Compute quorums for a CHOOSE expression: for each k-sized
@@ -416,24 +428,24 @@ fn choose_quorums<T: Element>(
     Box::new((0..n).combinations(k).flat_map(move |combo| {
         let selected: Vec<Vec<HashSet<T>>> =
             combo.iter().map(|&i| child_quorums[i].clone()).collect();
-        selected
-            .into_iter()
-            .multi_cartesian_product()
-            .map(|subquorums| {
-                subquorums.into_iter().fold(HashSet::new(), |mut acc, q| {
-                    acc.extend(q);
-                    acc
-                })
+        selected.into_iter().multi_cartesian_product().map(|subquorums| {
+            subquorums.into_iter().fold(HashSet::new(), |mut acc, q| {
+                acc.extend(q);
+                acc
             })
+        })
     }))
 }
 
 /// Solve the minimum hitting set problem via integer linear
 /// programming. Returns the size of the smallest set that
 /// intersects every quorum.
-fn min_hitting_set<T: Element>(quorums: impl Iterator<Item = HashSet<T>>) -> i64 {
+fn min_hitting_set<T: Element>(
+    quorums: impl Iterator<Item = HashSet<T>>,
+) -> i64 {
     use good_lp::{
-        default_solver, variable, Expression, ProblemVariables, Solution, SolverModel, Variable,
+        default_solver, variable, Expression, ProblemVariables, Solution,
+        SolverModel, Variable,
     };
 
     let quorum_list: Vec<HashSet<T>> = quorums.collect();
@@ -451,17 +463,12 @@ fn min_hitting_set<T: Element>(quorums: impl Iterator<Item = HashSet<T>>) -> i64
 
     // Create binary variables, one per element
     let mut vars = ProblemVariables::new();
-    let x: Vec<Variable> = all_elements
-        .iter()
-        .map(|_| vars.add(variable().binary()))
-        .collect();
+    let x: Vec<Variable> =
+        all_elements.iter().map(|_| vars.add(variable().binary())).collect();
 
     // Build element -> variable index mapping
-    let elem_to_idx: std::collections::HashMap<&T, usize> = all_elements
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (e, i))
-        .collect();
+    let elem_to_idx: HashMap<&T, usize> =
+        all_elements.iter().enumerate().map(|(i, e)| (e, i)).collect();
 
     // Minimize sum of all variables
     let objective: Expression = x.iter().copied().sum();
@@ -480,7 +487,7 @@ fn min_hitting_set<T: Element>(quorums: impl Iterator<Item = HashSet<T>>) -> i64
     match problem.solve() {
         Ok(solution) => {
             let total: f64 = x.iter().map(|&v| solution.value(v)).sum();
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(clippy::cast_possible_truncation)]
             {
                 total.round() as i64
             }
@@ -581,7 +588,7 @@ pub fn majority<T: Element>(exprs: Vec<Expr<T>>) -> Result<Expr<T>> {
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use hashbrown::HashSet;
 
     fn n(x: &str) -> Expr<String> {
         Expr::Node(Node::new(x.to_string()))
@@ -602,7 +609,8 @@ mod tests {
     }
 
     fn sorted_set(items: &[&str]) -> Vec<String> {
-        let mut v: Vec<String> = items.iter().map(|s| (*s).to_string()).collect();
+        let mut v: Vec<String> =
+            items.iter().map(|s| (*s).to_string()).collect();
         v.sort();
         v.dedup();
         v
@@ -610,7 +618,8 @@ mod tests {
 
     fn assert_quorums(e: &Expr<String>, expected: &[&[&str]]) {
         let got = quorum_set(e);
-        let want: HashSet<Vec<String>> = expected.iter().map(|s| sorted_set(s)).collect();
+        let want: HashSet<Vec<String>> =
+            expected.iter().map(|s| sorted_set(s)).collect();
         assert_eq!(got, want, "quorums mismatch");
     }
 
@@ -654,26 +663,32 @@ mod tests {
 
     #[test]
     fn test_quorums_choose_1() {
-        let e = choose(1, vec![n("a"), n("b"), n("c")]).unwrap_or_else(|e| panic!("{e}"));
+        let e = choose(1, vec![n("a"), n("b"), n("c")])
+            .unwrap_or_else(|e| panic!("{e}"));
         assert_quorums(&e, &[&["a"], &["b"], &["c"]]);
     }
 
     #[test]
     fn test_quorums_choose_2() {
-        let e = choose(2, vec![n("a"), n("b"), n("c")]).unwrap_or_else(|e| panic!("{e}"));
+        let e = choose(2, vec![n("a"), n("b"), n("c")])
+            .unwrap_or_else(|e| panic!("{e}"));
         assert_quorums(&e, &[&["a", "b"], &["a", "c"], &["b", "c"]]);
     }
 
     #[test]
     fn test_quorums_choose_3() {
-        let e = choose(3, vec![n("a"), n("b"), n("c")]).unwrap_or_else(|e| panic!("{e}"));
+        let e = choose(3, vec![n("a"), n("b"), n("c")])
+            .unwrap_or_else(|e| panic!("{e}"));
         assert_quorums(&e, &[&["a", "b", "c"]]);
     }
 
     #[test]
     fn test_quorums_cross_product() {
         let e = (n("a") + n("b")) * (n("c") + n("d"));
-        assert_quorums(&e, &[&["a", "c"], &["a", "d"], &["b", "c"], &["b", "d"]]);
+        assert_quorums(
+            &e,
+            &[&["a", "c"], &["a", "d"], &["b", "c"], &["b", "d"]],
+        );
     }
 
     #[test]
@@ -687,9 +702,12 @@ mod tests {
         let e = choose(
             2,
             vec![
-                choose(2, vec![n("a"), n("b"), n("c")]).unwrap_or_else(|e| panic!("{e}")),
-                choose(2, vec![n("d"), n("e"), n("f")]).unwrap_or_else(|e| panic!("{e}")),
-                choose(2, vec![n("a"), n("c"), n("e")]).unwrap_or_else(|e| panic!("{e}")),
+                choose(2, vec![n("a"), n("b"), n("c")])
+                    .unwrap_or_else(|e| panic!("{e}")),
+                choose(2, vec![n("d"), n("e"), n("f")])
+                    .unwrap_or_else(|e| panic!("{e}")),
+                choose(2, vec![n("a"), n("c"), n("e")])
+                    .unwrap_or_else(|e| panic!("{e}")),
             ],
         )
         .unwrap_or_else(|e| panic!("{e}"));
@@ -739,7 +757,8 @@ mod tests {
 
     #[test]
     fn test_is_quorum_choose() {
-        let expr = choose(2, vec![n("a"), n("b"), n("c")]).unwrap_or_else(|e| panic!("{e}"));
+        let expr = choose(2, vec![n("a"), n("b"), n("c")])
+            .unwrap_or_else(|e| panic!("{e}"));
         assert!(expr.is_quorum(&set(&["a", "b"])));
         assert!(expr.is_quorum(&set(&["a", "c"])));
         assert!(expr.is_quorum(&set(&["b", "c"])));
@@ -796,7 +815,8 @@ mod tests {
     fn test_resilience_mixed() {
         assert_eq!(((n("a") + n("b")) * (n("c") + n("d"))).resilience(), 1);
         assert_eq!(
-            ((n("a") + n("b") + n("c")) * (n("d") + n("e") + n("f"))).resilience(),
+            ((n("a") + n("b") + n("c")) * (n("d") + n("e") + n("f")))
+                .resilience(),
             2
         );
     }
@@ -805,27 +825,34 @@ mod tests {
     fn test_resilience_dup() {
         // These have duplicate elements, so they use LP
         assert_eq!(
-            ((n("a") + n("b") + n("c")) * (n("a") + n("e") + n("f"))).resilience(),
+            ((n("a") + n("b") + n("c")) * (n("a") + n("e") + n("f")))
+                .resilience(),
             2
         );
         assert_eq!(
-            ((n("a") + n("a") + n("c")) * (n("d") + n("e") + n("f"))).resilience(),
+            ((n("a") + n("a") + n("c")) * (n("d") + n("e") + n("f")))
+                .resilience(),
             1
         );
         assert_eq!(
-            ((n("a") + n("a") + n("a")) * (n("d") + n("e") + n("f"))).resilience(),
+            ((n("a") + n("a") + n("a")) * (n("d") + n("e") + n("f")))
+                .resilience(),
             0
         );
         assert_eq!(
-            (n("a") * n("b") + n("b") * n("c") + n("a") * n("d") + n("a") * n("d") * n("e"))
-                .resilience(),
+            (n("a") * n("b")
+                + n("b") * n("c")
+                + n("a") * n("d")
+                + n("a") * n("d") * n("e"))
+            .resilience(),
             1
         );
     }
 
     #[test]
     fn test_resilience_choose() {
-        let ch2_3 = choose(2, vec![n("a"), n("b"), n("c")]).unwrap_or_else(|e| panic!("{e}"));
+        let ch2_3 = choose(2, vec![n("a"), n("b"), n("c")])
+            .unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(ch2_3.resilience(), 1);
 
         let ch2_5 = choose(2, vec![n("a"), n("b"), n("c"), n("d"), n("e")])
@@ -843,16 +870,18 @@ mod tests {
 
     #[test]
     fn test_resilience_choose_compound() {
-        let e1 = choose(2, vec![n("a") + n("b") + n("c"), n("d") + n("e"), n("f")])
-            .unwrap_or_else(|e| panic!("{e}"));
+        let e1 =
+            choose(2, vec![n("a") + n("b") + n("c"), n("d") + n("e"), n("f")])
+                .unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(e1.resilience(), 2);
 
         let e2 = choose(2, vec![n("a") * n("b"), n("a") * n("c"), n("d")])
             .unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(e2.resilience(), 0);
 
-        let e3 = choose(2, vec![n("a") + n("b"), n("a") + n("c"), n("a") + n("d")])
-            .unwrap_or_else(|e| panic!("{e}"));
+        let e3 =
+            choose(2, vec![n("a") + n("b"), n("a") + n("c"), n("a") + n("d")])
+                .unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(e3.resilience(), 2);
     }
 
@@ -910,14 +939,18 @@ mod tests {
 
     #[test]
     fn test_dual_choose() {
-        let ch2_3 = choose(2, vec![n("a"), n("b"), n("c")]).unwrap_or_else(|e| panic!("{e}"));
-        let ch2_3b = choose(2, vec![n("a"), n("b"), n("c")]).unwrap_or_else(|e| panic!("{e}"));
+        let ch2_3 = choose(2, vec![n("a"), n("b"), n("c")])
+            .unwrap_or_else(|e| panic!("{e}"));
+        let ch2_3b = choose(2, vec![n("a"), n("b"), n("c")])
+            .unwrap_or_else(|e| panic!("{e}"));
         assert_dual(&ch2_3, &ch2_3b);
 
-        let ch2_ab_cd_e = choose(2, vec![n("a") + n("b"), n("c") + n("d"), n("e")])
-            .unwrap_or_else(|e| panic!("{e}"));
-        let ch2_ab_cd_e_dual = choose(2, vec![n("a") * n("b"), n("c") * n("d"), n("e")])
-            .unwrap_or_else(|e| panic!("{e}"));
+        let ch2_ab_cd_e =
+            choose(2, vec![n("a") + n("b"), n("c") + n("d"), n("e")])
+                .unwrap_or_else(|e| panic!("{e}"));
+        let ch2_ab_cd_e_dual =
+            choose(2, vec![n("a") * n("b"), n("c") * n("d"), n("e")])
+                .unwrap_or_else(|e| panic!("{e}"));
         assert_dual(&ch2_ab_cd_e, &ch2_ab_cd_e_dual);
 
         let ch3_5 = choose(3, vec![n("a"), n("b"), n("c"), n("d"), n("e")])
@@ -943,11 +976,13 @@ mod tests {
         assert!((n("a") * n("b")).dup_free());
         assert!((n("a") * n("b") + n("c")).dup_free());
 
-        let ch = choose(2, vec![n("a"), n("b"), n("c")]).unwrap_or_else(|e| panic!("{e}"));
+        let ch = choose(2, vec![n("a"), n("b"), n("c")])
+            .unwrap_or_else(|e| panic!("{e}"));
         assert!(ch.dup_free());
 
-        let ch2 = choose(2, vec![n("a") * n("b"), n("c"), n("d") + n("e") + n("f")])
-            .unwrap_or_else(|e| panic!("{e}"));
+        let ch2 =
+            choose(2, vec![n("a") * n("b"), n("c"), n("d") + n("e") + n("f")])
+                .unwrap_or_else(|e| panic!("{e}"));
         assert!(ch2.dup_free());
 
         let ch3 = choose(3, vec![n("a"), n("b"), n("c"), n("d"), n("e")])
@@ -963,7 +998,8 @@ mod tests {
         assert!(!(n("a") * n("a")).dup_free());
         assert!(!(n("a") * (n("b") + n("a"))).dup_free());
 
-        let ch = choose(2, vec![n("a"), n("b"), n("a")]).unwrap_or_else(|e| panic!("{e}"));
+        let ch = choose(2, vec![n("a"), n("b"), n("a")])
+            .unwrap_or_else(|e| panic!("{e}"));
         assert!(!ch.dup_free());
 
         let ch2 = choose(3, vec![n("a"), n("b"), n("c"), n("d"), n("a")])
@@ -977,19 +1013,22 @@ mod tests {
 
     #[test]
     fn test_choose_returns_or_for_k1() {
-        let e = choose(1, vec![n("a"), n("b"), n("c")]).unwrap_or_else(|e| panic!("{e}"));
+        let e = choose(1, vec![n("a"), n("b"), n("c")])
+            .unwrap_or_else(|e| panic!("{e}"));
         assert!(matches!(e, Expr::Or(_)));
     }
 
     #[test]
     fn test_choose_returns_and_for_k_eq_n() {
-        let e = choose(3, vec![n("a"), n("b"), n("c")]).unwrap_or_else(|e| panic!("{e}"));
+        let e = choose(3, vec![n("a"), n("b"), n("c")])
+            .unwrap_or_else(|e| panic!("{e}"));
         assert!(matches!(e, Expr::And(_)));
     }
 
     #[test]
     fn test_choose_returns_choose_for_middle_k() {
-        let e = choose(2, vec![n("a"), n("b"), n("c")]).unwrap_or_else(|e| panic!("{e}"));
+        let e = choose(2, vec![n("a"), n("b"), n("c")])
+            .unwrap_or_else(|e| panic!("{e}"));
         assert!(matches!(e, Expr::Choose(_)));
     }
 
@@ -1002,7 +1041,8 @@ mod tests {
 
     #[test]
     fn test_majority() {
-        let e = majority(vec![n("a"), n("b"), n("c")]).unwrap_or_else(|e| panic!("{e}"));
+        let e = majority(vec![n("a"), n("b"), n("c")])
+            .unwrap_or_else(|e| panic!("{e}"));
         assert_quorums(&e, &[&["a", "b"], &["a", "c"], &["b", "c"]]);
     }
 }

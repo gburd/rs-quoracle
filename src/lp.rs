@@ -6,10 +6,10 @@
 
 use crate::error::{Error, Result};
 use good_lp::{
-    constraint, default_solver, variable, Expression, ProblemVariables, Solution, SolverModel,
-    Variable,
+    constraint, default_solver, variable, Expression, ProblemVariables,
+    Solution, SolverModel, Variable,
 };
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 use std::hash::BuildHasher;
 
 /// Compute the size of the minimum hitting set for a collection
@@ -63,9 +63,8 @@ where
 
     // Objective: minimize sum of all binary variables (i.e. the
     // number of selected elements).
-    let objective: Expression = elem_to_var
-        .values()
-        .fold(Expression::default(), |acc, &v| acc + v);
+    let objective: Expression =
+        elem_to_var.values().fold(Expression::default(), |acc, &v| acc + v);
 
     let mut problem = vars.minimise(objective).using(default_solver);
 
@@ -79,15 +78,15 @@ where
         problem = problem.with(hit_sum.geq(1));
     }
 
-    let solution = problem
-        .solve()
-        .map_err(|e| Error::LpError(format!("min_hitting_set solver failed: {e}")))?;
+    let solution = problem.solve().map_err(|e| {
+        Error::LpError(format!("min_hitting_set solver failed: {e}"))
+    })?;
 
     // Sum the solution values (each is 0.0 or 1.0 for binary vars).
     let count: f64 = elem_to_var.values().map(|v| solution.value(*v)).sum();
 
     // Round to nearest integer to handle floating-point imprecision.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let result = count.round() as usize;
     Ok(result)
 }
@@ -191,13 +190,16 @@ pub fn solve_strategy_lp(cfg: &StrategyLpConfig) -> Result<StrategyLpSolution> {
 
     let mut problem = vars.minimise(objective).using(default_solver);
 
-    let r_sum: Expression = r_vars.iter().fold(Expression::default(), |acc, &v| acc + v);
+    let r_sum: Expression =
+        r_vars.iter().fold(Expression::default(), |acc, &v| acc + v);
     problem = problem.with(constraint!(r_sum == 1));
 
-    let w_sum: Expression = w_vars.iter().fold(Expression::default(), |acc, &v| acc + v);
+    let w_sum: Expression =
+        w_vars.iter().fold(Expression::default(), |acc, &v| acc + v);
     problem = problem.with(constraint!(w_sum == 1));
 
-    problem = add_load_constraints(problem, &load_cap_vars, &r_vars, &w_vars, cfg);
+    problem =
+        add_load_constraints(problem, &load_cap_vars, &r_vars, &w_vars, cfg);
 
     if let Some(limit) = cfg.load_limit {
         problem = problem.with(load_expr.leq(limit));
@@ -296,17 +298,19 @@ fn add_load_constraints<M: SolverModel>(
 
 /// Convert `usize` to `f64`, accepting precision loss for quorum
 /// sizes which are always small.
-#[allow(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss)]
 fn to_f64(n: usize) -> f64 {
     n as f64
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
-    fn sets_from_vecs<T: Eq + std::hash::Hash + Clone + Ord>(vecs: &[Vec<T>]) -> Vec<HashSet<T>> {
+    fn sets_from_vecs<T: Eq + std::hash::Hash + Clone + Ord>(
+        vecs: &[Vec<T>],
+    ) -> Vec<HashSet<T>> {
         vecs.iter().map(|v| v.iter().cloned().collect()).collect()
     }
 
@@ -365,7 +369,8 @@ mod tests {
     #[test]
     fn hitting_set_choose_2_of_3() {
         // choose(2, [a, b, c]): {a,b}, {a,c}, {b,c}
-        let sets = sets_from_vecs(&[vec!['a', 'b'], vec!['a', 'c'], vec!['b', 'c']]);
+        let sets =
+            sets_from_vecs(&[vec!['a', 'b'], vec!['a', 'c'], vec!['b', 'c']]);
         assert_eq!(min_hitting_set(&sets).unwrap(), 2);
     }
 

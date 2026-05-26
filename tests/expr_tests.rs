@@ -2,9 +2,9 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use hashbrown::HashSet;
 use quoracle::expr::{choose, majority, Node};
 use quoracle::Expr;
-use std::collections::HashSet;
 
 fn n(x: &str) -> Expr<String> {
     Expr::Node(Node::new(x.to_string()))
@@ -33,7 +33,8 @@ fn sorted_set(items: &[&str]) -> Vec<String> {
 
 fn assert_quorums(e: &Expr<String>, expected: &[&[&str]]) {
     let got = quorum_set(e);
-    let want: HashSet<Vec<String>> = expected.iter().map(|s| sorted_set(s)).collect();
+    let want: HashSet<Vec<String>> =
+        expected.iter().map(|s| sorted_set(s)).collect();
     assert_eq!(got, want, "quorums mismatch");
 }
 
@@ -235,8 +236,11 @@ fn test_resilience_dup() {
         0
     );
     assert_eq!(
-        (n("a") * n("b") + n("b") * n("c") + n("a") * n("d") + n("a") * n("d") * n("e"))
-            .resilience(),
+        (n("a") * n("b")
+            + n("b") * n("c")
+            + n("a") * n("d")
+            + n("a") * n("d") * n("e"))
+        .resilience(),
         1
     );
 }
@@ -246,25 +250,31 @@ fn test_resilience_choose() {
     let ch2_3 = choose(2, vec![n("a"), n("b"), n("c")]).expect("valid");
     assert_eq!(ch2_3.resilience(), 1);
 
-    let ch2_5 = choose(2, vec![n("a"), n("b"), n("c"), n("d"), n("e")]).expect("valid");
+    let ch2_5 =
+        choose(2, vec![n("a"), n("b"), n("c"), n("d"), n("e")]).expect("valid");
     assert_eq!(ch2_5.resilience(), 3);
 
-    let ch3_5 = choose(3, vec![n("a"), n("b"), n("c"), n("d"), n("e")]).expect("valid");
+    let ch3_5 =
+        choose(3, vec![n("a"), n("b"), n("c"), n("d"), n("e")]).expect("valid");
     assert_eq!(ch3_5.resilience(), 2);
 
-    let ch4_5 = choose(4, vec![n("a"), n("b"), n("c"), n("d"), n("e")]).expect("valid");
+    let ch4_5 =
+        choose(4, vec![n("a"), n("b"), n("c"), n("d"), n("e")]).expect("valid");
     assert_eq!(ch4_5.resilience(), 1);
 }
 
 #[test]
 fn test_resilience_choose_compound() {
-    let e1 = choose(2, vec![n("a") + n("b") + n("c"), n("d") + n("e"), n("f")]).expect("valid");
+    let e1 = choose(2, vec![n("a") + n("b") + n("c"), n("d") + n("e"), n("f")])
+        .expect("valid");
     assert_eq!(e1.resilience(), 2);
 
-    let e2 = choose(2, vec![n("a") * n("b"), n("a") * n("c"), n("d")]).expect("valid");
+    let e2 = choose(2, vec![n("a") * n("b"), n("a") * n("c"), n("d")])
+        .expect("valid");
     assert_eq!(e2.resilience(), 0);
 
-    let e3 = choose(2, vec![n("a") + n("b"), n("a") + n("c"), n("a") + n("d")]).expect("valid");
+    let e3 = choose(2, vec![n("a") + n("b"), n("a") + n("c"), n("a") + n("d")])
+        .expect("valid");
     assert_eq!(e3.resilience(), 2);
 }
 
@@ -326,17 +336,23 @@ fn test_dual_choose() {
     let ch2_3b = choose(2, vec![n("a"), n("b"), n("c")]).expect("valid");
     assert_dual(&ch2_3, &ch2_3b);
 
-    let ch2_ab_cd_e = choose(2, vec![n("a") + n("b"), n("c") + n("d"), n("e")]).expect("valid");
+    let ch2_ab_cd_e = choose(2, vec![n("a") + n("b"), n("c") + n("d"), n("e")])
+        .expect("valid");
     let ch2_ab_cd_e_dual =
-        choose(2, vec![n("a") * n("b"), n("c") * n("d"), n("e")]).expect("valid");
+        choose(2, vec![n("a") * n("b"), n("c") * n("d"), n("e")])
+            .expect("valid");
     assert_dual(&ch2_ab_cd_e, &ch2_ab_cd_e_dual);
 
-    let ch3_5 = choose(3, vec![n("a"), n("b"), n("c"), n("d"), n("e")]).expect("valid");
-    let ch3_5b = choose(3, vec![n("a"), n("b"), n("c"), n("d"), n("e")]).expect("valid");
+    let ch3_5 =
+        choose(3, vec![n("a"), n("b"), n("c"), n("d"), n("e")]).expect("valid");
+    let ch3_5b =
+        choose(3, vec![n("a"), n("b"), n("c"), n("d"), n("e")]).expect("valid");
     assert_dual(&ch3_5, &ch3_5b);
 
-    let ch2_5 = choose(2, vec![n("a"), n("b"), n("c"), n("d"), n("e")]).expect("valid");
-    let ch4_5 = choose(4, vec![n("a"), n("b"), n("c"), n("d"), n("e")]).expect("valid");
+    let ch2_5 =
+        choose(2, vec![n("a"), n("b"), n("c"), n("d"), n("e")]).expect("valid");
+    let ch4_5 =
+        choose(4, vec![n("a"), n("b"), n("c"), n("d"), n("e")]).expect("valid");
     assert_dual(&ch2_5, &ch4_5);
     assert_dual(&ch4_5, &ch2_5);
 }
@@ -353,10 +369,13 @@ fn test_dup_free() {
     let ch = choose(2, vec![n("a"), n("b"), n("c")]).expect("valid");
     assert!(ch.dup_free());
 
-    let ch2 = choose(2, vec![n("a") * n("b"), n("c"), n("d") + n("e") + n("f")]).expect("valid");
+    let ch2 =
+        choose(2, vec![n("a") * n("b"), n("c"), n("d") + n("e") + n("f")])
+            .expect("valid");
     assert!(ch2.dup_free());
 
-    let ch3 = choose(3, vec![n("a"), n("b"), n("c"), n("d"), n("e")]).expect("valid");
+    let ch3 =
+        choose(3, vec![n("a"), n("b"), n("c"), n("d"), n("e")]).expect("valid");
     assert!(ch3.dup_free());
 
     assert!(((n("a") + n("b")) * (n("c") + (n("d") * n("e")))).dup_free());
@@ -371,7 +390,8 @@ fn test_not_dup_free() {
     let ch = choose(2, vec![n("a"), n("b"), n("a")]).expect("valid");
     assert!(!ch.dup_free());
 
-    let ch2 = choose(3, vec![n("a"), n("b"), n("c"), n("d"), n("a")]).expect("valid");
+    let ch2 =
+        choose(3, vec![n("a"), n("b"), n("c"), n("d"), n("a")]).expect("valid");
     assert!(!ch2.dup_free());
 
     assert!(!((n("a") + n("b")) * (n("c") + (n("d") * n("a")))).dup_free());

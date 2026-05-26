@@ -449,7 +449,8 @@ mod tests {
                 is_subset(path, &result),
                 "forward: {path:?} not subset of {result:?}"
             );
-            let reversed: Vec<Segment> = segments.iter().rev().copied().collect();
+            let reversed: Vec<Segment> =
+                segments.iter().rev().copied().collect();
             let result_rev = max_of_segments(&reversed).expect("ok");
             assert!(
                 is_subset(path, &result_rev),
@@ -479,7 +480,8 @@ mod tests {
                 is_subset(path, &result),
                 "forward: {path:?} not subset of {result:?}"
             );
-            let reversed: Vec<Segment> = segments.iter().rev().copied().collect();
+            let reversed: Vec<Segment> =
+                segments.iter().rev().copied().collect();
             let result_rev = max_of_segments(&reversed).expect("ok");
             assert!(
                 is_subset(path, &result_rev),

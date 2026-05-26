@@ -94,7 +94,8 @@ fn benchmark_resilience(c: &mut Criterion) {
         let e = Expr::Node(Node::new('e'));
         let f = Expr::Node(Node::new('f'));
 
-        let expr = (a.clone() * b.clone() + c.clone() * d.clone()) * (e.clone() + f.clone());
+        let expr = (a.clone() * b.clone() + c.clone() * d.clone())
+            * (e.clone() + f.clone());
         let qs = QuorumSystem::from_reads(expr);
 
         bencher.iter(|| {

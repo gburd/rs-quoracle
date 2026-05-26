@@ -38,9 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Found optimal system!");
     println!("Resilience: {}", result.quorum_system.resilience());
 
-    let load = result
-        .strategy
-        .load(Some(&Distribution::Fixed(0.5)), None)?;
+    let load = result.strategy.load(Some(&Distribution::Fixed(0.5)), None)?;
     println!("Load: {load:.4}");
     let capacity = 1.0 / load;
     println!("Capacity: {capacity:.4}");

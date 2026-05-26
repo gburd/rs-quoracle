@@ -62,7 +62,10 @@ fn partitionings<T: Clone>(xs: &[T]) -> Vec<Vec<Vec<T>>> {
 ///
 /// Yields expressions with height at most `max_height`.
 /// If `max_height` is 0, there is no height limit.
-fn dup_free_exprs<T: Element>(nodes: &[Node<T>], max_height: usize) -> Vec<Expr<T>> {
+fn dup_free_exprs<T: Element>(
+    nodes: &[Node<T>],
+    max_height: usize,
+) -> Vec<Expr<T>> {
     assert!(!nodes.is_empty(), "nodes must not be empty");
 
     if nodes.len() == 1 {
@@ -71,7 +74,8 @@ fn dup_free_exprs<T: Element>(nodes: &[Node<T>], max_height: usize) -> Vec<Expr<
 
     if max_height == 1 {
         let mut result = Vec::new();
-        let node_exprs: Vec<Expr<T>> = nodes.iter().map(|n| Expr::Node(n.clone())).collect();
+        let node_exprs: Vec<Expr<T>> =
+            nodes.iter().map(|n| Expr::Node(n.clone())).collect();
         for k in 1..=nodes.len() {
             if let Ok(expr) = choose(k, node_exprs.clone()) {
                 result.push(expr);
@@ -190,7 +194,10 @@ pub struct SearchResult<T: Element> {
 ///
 /// Returns `Error::NoQuorumSystemFound` if no valid system satisfying
 /// the constraints is found within the timeout.
-pub fn search<T: Element>(nodes: &[Node<T>], config: &SearchConfig) -> Result<SearchResult<T>> {
+pub fn search<T: Element>(
+    nodes: &[Node<T>],
+    config: &SearchConfig,
+) -> Result<SearchResult<T>> {
     let start_time = Instant::now();
 
     let mut opt_qs: Option<QuorumSystem<T>> = None;
@@ -255,7 +262,9 @@ pub fn search<T: Element>(nodes: &[Node<T>], config: &SearchConfig) -> Result<Se
             }
 
             // Check timeout
-            if config.timeout != Duration::from_secs(0) && start_time.elapsed() >= config.timeout {
+            if config.timeout != Duration::from_secs(0)
+                && start_time.elapsed() >= config.timeout
+            {
                 return true; // Timed out
             }
         }
@@ -267,10 +276,9 @@ pub fn search<T: Element>(nodes: &[Node<T>], config: &SearchConfig) -> Result<Se
     if do_search(exprs_h2) {
         // Timed out during height 2 search
         return match (opt_qs, opt_strategy) {
-            (Some(qs), Some(strategy)) => Ok(SearchResult {
-                quorum_system: qs,
-                strategy,
-            }),
+            (Some(qs), Some(strategy)) => {
+                Ok(SearchResult { quorum_system: qs, strategy })
+            }
             _ => Err(Error::NoQuorumSystemFound),
         };
     }
@@ -280,16 +288,15 @@ pub fn search<T: Element>(nodes: &[Node<T>], config: &SearchConfig) -> Result<Se
     do_search(exprs);
 
     match (opt_qs, opt_strategy) {
-        (Some(qs), Some(strategy)) => Ok(SearchResult {
-            quorum_system: qs,
-            strategy,
-        }),
+        (Some(qs), Some(strategy)) => {
+            Ok(SearchResult { quorum_system: qs, strategy })
+        }
         _ => Err(Error::NoQuorumSystemFound),
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::cloned_ref_to_slice_refs)]
+#[expect(clippy::cloned_ref_to_slice_refs)]
 mod tests {
     use super::*;
 

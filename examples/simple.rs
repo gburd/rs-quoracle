@@ -27,7 +27,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   writes (the dual) require one from each row
     println!("Creating grid quorum system...");
     let grid = QuorumSystem::from_reads(
-        (a.clone() * b.clone() * c.clone()) + (d.clone() * e.clone() * f.clone()),
+        (a.clone() * b.clone() * c.clone())
+            + (d.clone() * e.clone() * f.clone()),
     );
 
     // Resilience: how many node failures can the system
@@ -40,7 +41,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Finding optimal strategy for 50% reads...");
     let fr = Distribution::fixed(0.5)?;
     let limits = StrategyLimits::default();
-    let strategy = grid.strategy(Objective::Load, Some(&fr), None, &limits, 0)?;
+    let strategy =
+        grid.strategy(Objective::Load, Some(&fr), None, &limits, 0)?;
 
     let load = strategy.load(Some(&fr), None)?;
     println!("Optimal load: {:.4}", load);
