@@ -63,10 +63,11 @@ jobs:
       - name: Build examples
         run: |
           cargo build --example simple
+          cargo build --example tutorial
           cargo build --example search
 
-      - name: Test no-default-features
-        run: cargo test --no-default-features
+      - name: Test with CBC solver
+        run: cargo test --no-default-features --features cbc
 
   coverage:
     name: Coverage

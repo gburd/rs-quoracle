@@ -1,14 +1,31 @@
 [package]
 name = "quoracle"
-version = "1.2.1"
+version = "1.4.0"
 edition = "2021"
 rust-version = "1.70"
 authors = ["Greg Burd <greg@burd.me>"]
 description = "A library for constructing and analyzing read-write quorum systems"
-repository = "https://github.com/gregburd/quoracle"
+repository = "https://codeberg.org/gregburd/rs-quoracle"
+homepage = "https://codeberg.org/gregburd/rs-quoracle"
+documentation = "https://docs.rs/quoracle"
+readme = "README.md"
 license = "MIT OR Apache-2.0"
 keywords = ["distributed-systems", "quorum", "consensus", "optimization"]
 categories = ["algorithms", "mathematics"]
+include = [
+    "/src/**/*.rs",
+    "/benches/**/*.rs",
+    "/examples/**/*.rs",
+    "/tests/**/*.rs",
+    "/build.rs",
+    "/Cargo.toml",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/SOLVERS.md",
+    "/LICENSE-MIT",
+    "/LICENSE-APACHE-2.0",
+    "/rustfmt.toml",
+]
 
 [features]
 default = ["microlp"]
@@ -24,12 +41,10 @@ thiserror = "2.0"
 good_lp = { version = "1.8", default-features = false }
 itertools = "0.13"
 rand = "0.8"
-ahash = "0.8"
 hashbrown = "0.15"
 
 [dev-dependencies]
 criterion = "0.5"
-proptest = "1.0"
 
 [[bench]]
 name = "benchmarks"

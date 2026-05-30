@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-05-30
+
+### Changed
+- Switched internal `HashMap`/`HashSet` usage from `std` to `hashbrown` for
+  faster lookups in quorum enumeration and strategy construction.
+- Build script now silently accepts `--all-features` (both solvers enabled,
+  e.g. in CI) and only errors when no solver feature is enabled.
+
+### Fixed
+- Fixed a `SolverModel` dyn-incompatibility in the LP helpers by making them
+  generic over the solver model type.
+- Corrected the `repository` URL to the canonical Codeberg location and added
+  `homepage`/`documentation` metadata for crates.io.
+- Updated the README Quick Start to the current `StrategyLimits` /
+  `Distribution::fixed` API.
+
+### Added
+- `rustfmt.toml` pinning the project's 80-column style so `cargo fmt --check`
+  is reproducible in CI.
+- Forgejo Actions CI workflow for Codeberg (`.forgejo/workflows/ci.yml`)
+  alongside the existing GitHub Actions workflow.
+- Re-exported `SearchConfig` and `SearchResult` from the crate root.
+
+### Removed
+- Deleted the stale, unused `solver.rs` module (it documented a Clarabel
+  default that does not exist; the active solver abstraction lives in `lp.rs`).
+
+## [1.3.0] - 2026-03-15
+
+### Changed
+- **Breaking:** `QuorumSystem::strategy` now takes a single `StrategyLimits`
+  struct instead of three positional `Option` limit arguments, and `f` is the
+  final argument.
+- `Distribution::fixed` and `Distribution::weighted` now validate their inputs
+  and return `Result`.
+
+### Added
+- mdBook documentation under `docs/`.
+- Nix flake (`flake.nix`) for reproducible development environments.
+- `deny.toml` for `cargo-deny` license/advisory checks.
+- Standalone `LICENSE-MIT` and `LICENSE-APACHE-2.0` files.
+
 ## [1.2.1] - 2026-03-05
 
 ### Added
@@ -87,5 +129,9 @@ Otherwise, Microlp works as a drop-in replacement with no code changes needed.
 - Support for heterogeneous nodes (capacity, latency)
 - F-resilient quorum enumeration
 
-[1.1.0]: https://github.com/gregburd/quoracle/releases/tag/v1.1.0
-[1.0.0]: https://github.com/gregburd/quoracle/releases/tag/v1.0.0
+[1.4.0]: https://codeberg.org/gregburd/rs-quoracle/releases/tag/v1.4.0
+[1.3.0]: https://codeberg.org/gregburd/rs-quoracle/releases/tag/v1.3.0
+[1.2.1]: https://codeberg.org/gregburd/rs-quoracle/releases/tag/v1.2.1
+[1.2.0]: https://codeberg.org/gregburd/rs-quoracle/releases/tag/v1.2.0
+[1.1.0]: https://codeberg.org/gregburd/rs-quoracle/releases/tag/v1.1.0
+[1.0.0]: https://codeberg.org/gregburd/rs-quoracle/releases/tag/v1.0.0

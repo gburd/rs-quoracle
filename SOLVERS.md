@@ -18,7 +18,7 @@ Quoracle uses linear programming to optimize quorum strategies. The library requ
 
 ```toml
 [dependencies]
-quoracle = "1.2"  # Uses Microlp by default
+quoracle = "1.4"  # Uses Microlp by default
 ```
 
 ## Alternative: CBC (Maximum Performance)
@@ -28,8 +28,7 @@ If you need absolute maximum performance and don't mind verbose output:
 ```toml
 [dependencies]
 # Replace Microlp with CBC solver
-quoracle = { version = "1.2", default-features = false }
-good_lp = { version = "1.8", features = ["coin_cbc"] }
+quoracle = { version = "1.4", default-features = false, features = ["cbc"] }
 ```
 
 ### CBC Trade-offs
@@ -79,7 +78,10 @@ cargo test --no-default-features --features cbc
 cargo test --no-default-features --features microlp
 ```
 
-**Note**: The solver features are mutually exclusive - only one can be enabled at a time. Running `cargo test --all-features` will fail with a build error. This prevents conflicts between solvers.
+**Note**: Enable exactly one solver feature for a given deployment. Building
+with no solver feature (`--no-default-features` with neither `microlp` nor
+`cbc`) fails fast with a clear error. Building with both enabled (for example
+`cargo test --all-features` in CI) is accepted: the build prefers Microlp.
 
 ## Technical Details
 
@@ -100,8 +102,7 @@ Version 1.1.0 used CBC by default. If you want to keep using CBC:
 ```toml
 [dependencies]
 # Explicit CBC (fastest performance, verbose output)
-quoracle = { version = "1.2", default-features = false }
-good_lp = { version = "1.8", features = ["coin_cbc"] }
+quoracle = { version = "1.4", default-features = false, features = ["cbc"] }
 ```
 
 Otherwise, the default Microlp solver will work as a drop-in replacement with no code changes needed.

@@ -11,6 +11,9 @@ Cargo.lock
 *.swo
 *~
 
+# direnv / nix
+.direnv/
+
 # OS
 .DS_Store
 Thumbs.db

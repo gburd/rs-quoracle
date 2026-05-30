@@ -16,7 +16,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-quoracle = "1.2"
+quoracle = "1.4"
 ```
 
 The default uses the **Microlp** solver (pure Rust, silent output). For alternatives, see [SOLVERS.md](SOLVERS.md).
@@ -26,29 +26,32 @@ The default uses the **Microlp** solver (pure Rust, silent output). For alternat
 ```rust
 use quoracle::*;
 
-// Define node expressions
-let a = Expr::Node(Node::new("a"));
-let b = Expr::Node(Node::new("b"));
-let c = Expr::Node(Node::new("c"));
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Define node expressions.
+    let a = Expr::Node(Node::new("a"));
+    let b = Expr::Node(Node::new("b"));
+    let c = Expr::Node(Node::new("c"));
 
-// Create a simple majority quorum system
-let qs = QuorumSystem::from_reads(a + b + c);
+    // Build a quorum system where reads need any single node
+    // and writes (the dual) need all nodes.
+    let qs = QuorumSystem::from_reads(a + b + c);
 
-// Find optimal strategy
-let dist = Distribution::Fixed(0.5);
-let strategy = qs.strategy(
-    Objective::Load,      // Minimize load
-    Some(&dist),          // Read fraction
-    None,                 // Write fraction (inferred)
-    None,                 // No load limit
-    None,                 // No network limit
-    None,                 // No latency limit
-    0,                    // f-resilience
-)?;
+    // Find the load-optimal strategy for a 50% read workload.
+    let fr = Distribution::fixed(0.5)?;
+    let limits = StrategyLimits::default();
+    let strategy = qs.strategy(
+        Objective::Load, // Minimize load
+        Some(&fr),       // Read fraction
+        None,            // Write fraction (inferred from reads)
+        &limits,         // Optional load/network/latency limits
+        0,               // f-resilience
+    )?;
 
-// Calculate load
-let load = strategy.load(Some(&dist), None)?;
-println!("Load: {:.4}", load);
+    // Calculate load.
+    let load = strategy.load(Some(&fr), None)?;
+    println!("Load: {load:.4}");
+    Ok(())
+}
 ```
 
 ## Development
@@ -128,7 +131,7 @@ The Rust implementation provides significant performance improvements over the P
 - **3-10× faster** for quorum enumeration and iteration
 - **2-10× faster** for load calculations
 - **3-10× faster** for heuristic search
-- **~1.5× faster** for LP optimization (both use CBC solver)
+- **~1.5× faster** for LP optimization (measured with the CBC backend)
 
 See [PERFORMANCE.md](PERFORMANCE.md) for measured results and [COMPARISON.md](COMPARISON.md) for detailed Rust vs Python analysis.
 
@@ -163,10 +166,10 @@ quoracle/
 
 ## Implementation Notes
 
-- **4,103 lines** of production code
-- **155 tests** (all passing)
-- **Zero clippy warnings** with strict lints
-- Uses **CBC solver** via good_lp for LP optimization
+- **~2,800 lines** of library code across 7 modules (plus tests)
+- **155 tests** (118 unit + 36 integration + 1 doc, all passing)
+- **Zero clippy warnings** with strict lints (`unsafe_code` forbidden)
+- Uses the **Microlp** LP solver by default (pure Rust); **CBC** available via the `cbc` feature
 - Type-safe generics with `Element` trait
 - BTreeMap-based quorum storage for hashability
 
@@ -182,9 +185,11 @@ quoracle/
 
 Both implementations:
 - Use identical algorithms
-- Use CBC solver backend
 - Are production-ready
 - Have comprehensive tests
+
+The Rust implementation defaults to the pure-Rust Microlp solver, with
+CBC available via the `cbc` feature; the Python implementation uses CBC.
 
 ## Future Work
 
