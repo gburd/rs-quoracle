@@ -7,16 +7,32 @@
 use crate::error::{Error, Result};
 use hashbrown::HashMap;
 
-/// Wrapper for `f64` that implements `Eq` and `Hash` via bit
-/// representation, enabling use as a `HashMap` key.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+/// An `f64` usable as a map key.
+///
+/// Equality and hashing use the bit pattern after normalizing `-0.0` to
+/// `0.0`, so `Eq` and `Hash` agree. Values stored by this crate are always
+/// finite and in `[0, 1]`.
+#[derive(Debug, Clone, Copy)]
 pub struct OrderedFloat(pub f64);
+
+impl OrderedFloat {
+    fn key(self) -> u64 {
+        // `0.0 + -0.0 == 0.0`, which folds -0.0 into 0.0.
+        (self.0 + 0.0).to_bits()
+    }
+}
+
+impl PartialEq for OrderedFloat {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
 
 impl Eq for OrderedFloat {}
 
 impl std::hash::Hash for OrderedFloat {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.0.to_bits().hash(state);
+        self.key().hash(state);
     }
 }
 
@@ -37,7 +53,12 @@ impl std::fmt::Display for OrderedFloat {
 /// fractions are in [0, 1].
 pub type Canonical = HashMap<OrderedFloat, f64>;
 
-/// Represents a distribution of read fractions in a workload.
+/// A distribution over read fractions.
+///
+/// Build one with [`Distribution::fixed`] or [`Distribution::weighted`],
+/// which validate their inputs. The variants are public for pattern
+/// matching; values built directly are validated again whenever they are
+/// used.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Distribution {
     /// A single fixed read fraction (e.g. 0.5 means 50% reads).
@@ -66,40 +87,33 @@ impl Distribution {
     /// # Errors
     ///
     /// Returns an error if any fraction is not in [0.0, 1.0], any weight
-    /// is negative, or the weights slice is empty.
+    /// is negative or not finite, the slice is empty, or all weights are 0.
+    ///
+    /// Repeated fractions have their weights added together.
     pub fn weighted(weights: &[(f64, f64)]) -> Result<Self> {
         if weights.is_empty() {
             return Err(Error::InvalidDistribution(
                 "distribution cannot be empty".into(),
             ));
         }
+        let mut mapped: HashMap<OrderedFloat, f64> = HashMap::new();
         for &(frac, weight) in weights {
-            validate_fraction(frac)?;
-            if weight < 0.0 {
-                return Err(Error::InvalidDistribution(format!(
-                    "weight must be non-negative, \
-                         got {weight} for fraction {frac}"
-                )));
-            }
+            *mapped.entry(OrderedFloat(frac)).or_default() += weight;
         }
-        let total: f64 = weights.iter().map(|(_, w)| w).sum();
-        if total == 0.0 {
-            return Err(Error::InvalidDistribution(
-                "total weight must be positive".into(),
-            ));
-        }
-        let mapped: HashMap<OrderedFloat, f64> =
-            weights.iter().map(|&(k, v)| (OrderedFloat(k), v)).collect();
-        Ok(Self::Weighted(mapped))
+        let d = Self::Weighted(mapped);
+        d.canonicalize()?;
+        Ok(d)
     }
 
-    /// Return the distinct read fractions in this distribution.
+    /// The distinct read fractions in this distribution, sorted.
     #[must_use]
     pub fn fractions(&self) -> Vec<f64> {
-        match self {
+        let mut v: Vec<f64> = match self {
             Self::Fixed(f) => vec![*f],
             Self::Weighted(map) => map.keys().map(|k| k.0).collect(),
-        }
+        };
+        v.sort_by(f64::total_cmp);
+        v
     }
 
     /// Canonicalize this distribution into a map of
@@ -108,19 +122,35 @@ impl Distribution {
     ///
     /// # Errors
     ///
-    /// Returns an error if the total weight is zero (for weighted distributions).
+    /// Returns an error if any fraction is outside [0, 1], any weight is
+    /// negative or not finite, or the total weight is not positive.
     pub fn canonicalize(&self) -> Result<Canonical> {
         match self {
             Self::Fixed(f) => {
+                validate_fraction(*f)?;
                 let mut m = HashMap::with_capacity(1);
                 m.insert(OrderedFloat(*f), 1.0);
                 Ok(m)
             }
             Self::Weighted(weights) => {
-                let total: f64 = weights.values().sum();
-                if total == 0.0 {
+                if weights.is_empty() {
                     return Err(Error::InvalidDistribution(
-                        "total weight must be positive".into(),
+                        "distribution cannot be empty".into(),
+                    ));
+                }
+                for (frac, &weight) in weights {
+                    validate_fraction(frac.0)?;
+                    if !weight.is_finite() || weight < 0.0 {
+                        return Err(Error::InvalidDistribution(format!(
+                            "weight must be finite and non-negative, got \
+                             {weight} for fraction {frac}"
+                        )));
+                    }
+                }
+                let total: f64 = weights.values().sum();
+                if !total.is_finite() || total <= 0.0 {
+                    return Err(Error::InvalidDistribution(
+                        "total weight must be finite and positive".into(),
                     ));
                 }
                 let m: Canonical = weights
@@ -189,6 +219,7 @@ pub fn canonicalize_rw(
 }
 
 fn validate_fraction(f: f64) -> Result<()> {
+    // `contains` is false for NaN, so NaN is rejected too.
     if !(0.0..=1.0).contains(&f) {
         return Err(Error::InvalidDistribution(format!(
             "fraction must be in [0, 1], got {f}"
@@ -198,12 +229,7 @@ fn validate_fraction(f: f64) -> Result<()> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::float_cmp,
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::used_underscore_binding
-)]
+#[expect(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -219,6 +245,43 @@ mod tests {
         let mut set = HashSet::new();
         set.insert(a);
         assert!(set.contains(&b));
+    }
+
+    #[test]
+    fn ordered_float_signed_zero() {
+        use std::hash::BuildHasher;
+        let h = hashbrown::DefaultHashBuilder::default();
+        assert_eq!(OrderedFloat(0.0), OrderedFloat(-0.0));
+        assert_eq!(
+            h.hash_one(OrderedFloat(0.0)),
+            h.hash_one(OrderedFloat(-0.0))
+        );
+    }
+
+    #[test]
+    fn invalid_values_rejected() {
+        assert!(Distribution::fixed(f64::NAN).is_err());
+        assert!(Distribution::weighted(&[(0.5, f64::NAN)]).is_err());
+        assert!(Distribution::weighted(&[(0.5, f64::INFINITY)]).is_err());
+        assert!(Distribution::weighted(&[(f64::NAN, 1.0)]).is_err());
+        // Directly-built variants are validated on use.
+        assert!(Distribution::Fixed(2.0).canonicalize().is_err());
+        assert!(Distribution::Weighted(HashMap::new()).canonicalize().is_err());
+        let mut m = HashMap::new();
+        m.insert(OrderedFloat(2.0), 1.0);
+        assert!(Distribution::Weighted(m).canonicalize().is_err());
+        let mut m = HashMap::new();
+        m.insert(OrderedFloat(0.5), -1.0);
+        assert!(Distribution::Weighted(m).canonicalize().is_err());
+    }
+
+    #[test]
+    fn weighted_merges_duplicates_and_sorts_fractions() {
+        let d = Distribution::weighted(&[(0.8, 1.0), (0.2, 1.0), (0.8, 2.0)])
+            .expect("valid");
+        assert_eq!(d.fractions(), vec![0.2, 0.8]);
+        let c = d.canonicalize().expect("valid");
+        assert!((c[&OrderedFloat(0.8)] - 0.75).abs() < 1e-12);
     }
 
     #[test]

@@ -2,8 +2,8 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use hashbrown::HashSet;
 use quoracle::expr::{choose, majority, Node};
+use quoracle::hashbrown::HashSet;
 use quoracle::Expr;
 
 fn n(x: &str) -> Expr<String> {

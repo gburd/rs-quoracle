@@ -1,22 +1,19 @@
 [book]
 title = "Quoracle"
 authors = ["Greg Burd"]
-description = "A library for constructing and analyzing read-write quorum systems"
+description = "Construct, analyze, and optimize read-write quorum systems in Rust"
 language = "en"
-multilingual = false
 src = "docs/src"
 
 [build]
 build-dir = "docs/book"
 
 [output.html]
-git-repository-url = "https://github.com/gregburd/quoracle"
-edit-url-template = "https://github.com/gregburd/quoracle/edit/main/docs/src/{path}"
-site-url = "/quoracle/"
+git-repository-url = "https://codeberg.org/gregburd/rs-quoracle"
+git-repository-icon = "fas-code-fork"
+edit-url-template = "https://codeberg.org/gregburd/rs-quoracle/_edit/main/{path}"
+site-url = "/rs-quoracle/"
 
 [output.html.fold]
 enable = true
 level = 0
-
-[output.html.playground]
-editable = false

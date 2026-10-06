@@ -7,8 +7,9 @@
     missing_docs
 )]
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use quoracle::search::{search, SearchConfig};
+use criterion::{criterion_group, criterion_main, Criterion};
+use std::hint::black_box;
+
 use quoracle::*;
 use std::time::Duration;
 

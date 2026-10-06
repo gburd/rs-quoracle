@@ -1,23 +1,14 @@
-//! Build script: validates LP solver feature configuration.
+//! Build script: fail early, with a clear message, when no LP solver
+//! feature is enabled (otherwise `good_lp` fails with a less obvious error).
 
 fn main() {
-    let microlp = cfg!(feature = "microlp");
-    let cbc = cfg!(feature = "cbc");
-
-    if microlp && cbc {
-        // Both features enabled (e.g. via --all-features in CI).
-        // Silently prefer microlp (the default) — no warning needed since
-        // --all-features is a valid CI invocation pattern.
-        return;
-    }
-
+    println!("cargo:rerun-if-changed=build.rs");
+    let microlp = std::env::var_os("CARGO_FEATURE_MICROLP").is_some();
+    let cbc = std::env::var_os("CARGO_FEATURE_CBC").is_some();
     if !microlp && !cbc {
-        // No solver configured — this is always an error.
         println!(
-            "cargo:warning=quoracle: no solver feature enabled; add \
-             'microlp' (default) or 'cbc' to your dependency features."
+            "cargo:warning=quoracle: no LP solver feature enabled; enable \
+             `microlp` (default) or `cbc`."
         );
-        // Trigger a compile error via a non-existent cfg.
-        println!("cargo:rustc-cfg=quoracle_no_solver_enabled");
     }
 }

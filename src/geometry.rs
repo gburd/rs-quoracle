@@ -227,20 +227,13 @@ pub fn max_of_segments(segments: &[Segment]) -> Result<Vec<(f64, f64)>> {
     Ok(result)
 }
 
+/// Relative tolerance 1e-5 (like Python's `math.isclose(rel_tol=1e-5)`).
 fn approx_eq(a: f64, b: f64) -> bool {
-    if a == b {
-        return true;
-    }
-    let diff = (a - b).abs();
-    let larger = a.abs().max(b.abs());
-    if larger == 0.0 {
-        return diff < 1e-5;
-    }
-    diff / larger <= 1e-5
+    (a - b).abs() <= 1e-5 * a.abs().max(b.abs())
 }
 
 #[cfg(test)]
-#[expect(clippy::float_cmp, clippy::expect_used)]
+#[expect(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -521,6 +514,9 @@ mod tests {
         let s3 = seg(0.0, 1.1, 1.0, 2.0);
         assert!(s1.approximately_equal(&s2));
         assert!(!s1.approximately_equal(&s3));
+        let z = seg(0.0, 0.0, 1.0, 0.0);
+        assert!(z.approximately_equal(&z));
+        assert!(!z.approximately_equal(&seg(0.0, 1e-9, 1.0, 0.0)));
     }
 
     #[test]

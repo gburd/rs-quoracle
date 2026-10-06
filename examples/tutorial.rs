@@ -157,12 +157,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== Heterogeneous Nodes ===\n");
 
-    let a = Expr::Node(Node::new("a").with_capacity(1000.0));
-    let b = Expr::Node(Node::new("b").with_capacity(500.0));
-    let c = Expr::Node(Node::new("c").with_capacity(1000.0));
-    let d = Expr::Node(Node::new("d").with_capacity(500.0));
-    let e = Expr::Node(Node::new("e").with_capacity(1000.0));
-    let f = Expr::Node(Node::new("f").with_capacity(500.0));
+    let a = Expr::Node(Node::new("a").with_capacity(1000.0)?);
+    let b = Expr::Node(Node::new("b").with_capacity(500.0)?);
+    let c = Expr::Node(Node::new("c").with_capacity(1000.0)?);
+    let d = Expr::Node(Node::new("d").with_capacity(500.0)?);
+    let e = Expr::Node(Node::new("e").with_capacity(1000.0)?);
+    let f = Expr::Node(Node::new("f").with_capacity(500.0)?);
 
     let grid2 = QuorumSystem::from_reads(
         a.clone() * b.clone() * c.clone() + d.clone() * e.clone() * f.clone(),
@@ -174,14 +174,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Asymmetric read/write capacities.
     let a =
-        Expr::Node(Node::new("a").with_read_write_capacity(10000.0, 1000.0));
-    let b = Expr::Node(Node::new("b").with_read_write_capacity(5000.0, 500.0));
+        Expr::Node(Node::new("a").with_read_write_capacity(10000.0, 1000.0)?);
+    let b = Expr::Node(Node::new("b").with_read_write_capacity(5000.0, 500.0)?);
     let c =
-        Expr::Node(Node::new("c").with_read_write_capacity(10000.0, 1000.0));
-    let d = Expr::Node(Node::new("d").with_read_write_capacity(5000.0, 500.0));
+        Expr::Node(Node::new("c").with_read_write_capacity(10000.0, 1000.0)?);
+    let d = Expr::Node(Node::new("d").with_read_write_capacity(5000.0, 500.0)?);
     let e =
-        Expr::Node(Node::new("e").with_read_write_capacity(10000.0, 1000.0));
-    let f = Expr::Node(Node::new("f").with_read_write_capacity(5000.0, 500.0));
+        Expr::Node(Node::new("e").with_read_write_capacity(10000.0, 1000.0)?);
+    let f = Expr::Node(Node::new("f").with_read_write_capacity(5000.0, 500.0)?);
     let grid3 = QuorumSystem::from_reads(
         a.clone() * b.clone() * c.clone() + d.clone() * e.clone() * f.clone(),
     );
@@ -212,32 +212,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let secs = |s| Duration::from_secs(s);
     let a = Expr::Node(
         Node::new("a")
-            .with_read_write_capacity(10000.0, 1000.0)
+            .with_read_write_capacity(10000.0, 1000.0)?
             .with_latency(secs(1)),
     );
     let b = Expr::Node(
         Node::new("b")
-            .with_read_write_capacity(5000.0, 500.0)
+            .with_read_write_capacity(5000.0, 500.0)?
             .with_latency(secs(2)),
     );
     let c = Expr::Node(
         Node::new("c")
-            .with_read_write_capacity(10000.0, 1000.0)
+            .with_read_write_capacity(10000.0, 1000.0)?
             .with_latency(secs(3)),
     );
     let d = Expr::Node(
         Node::new("d")
-            .with_read_write_capacity(5000.0, 500.0)
+            .with_read_write_capacity(5000.0, 500.0)?
             .with_latency(secs(4)),
     );
     let e = Expr::Node(
         Node::new("e")
-            .with_read_write_capacity(10000.0, 1000.0)
+            .with_read_write_capacity(10000.0, 1000.0)?
             .with_latency(secs(5)),
     );
     let f = Expr::Node(
         Node::new("f")
-            .with_read_write_capacity(5000.0, 500.0)
+            .with_read_write_capacity(5000.0, 500.0)?
             .with_latency(secs(6)),
     );
     let grid4 = QuorumSystem::from_reads(a * b * c + d * e * f);

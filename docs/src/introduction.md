@@ -1,52 +1,36 @@
 # Quoracle
 
-A Rust library for constructing and analyzing read-write quorum systems used in distributed systems research.
+Quoracle is a Rust library for designing and analyzing **read-write quorum
+systems**. A quorum system decides which replicas a read must contact and
+which a write must contact, so that every read sees the latest write.
 
-## What are Quorum Systems?
+Given a quorum system and a workload, Quoracle computes its fault
+tolerance, load, capacity, network cost, and latency. It finds the
+strategy (the probability of picking each quorum) that optimizes any of
+those, and it can search for the best quorum system over a set of nodes.
 
-Quorum systems are fundamental to distributed storage and consensus protocols. They specify which subsets of replicas (quorums) must agree on read/write operations to ensure consistency.
+It is a Rust port of the Python [Quoracle](https://github.com/mwhittaker/quoracle)
+library from [*Read-Write Quorum Systems Made
+Practical*](https://mwhittaker.github.io/publications/quoracle.pdf)
+(PaPoC 2021).
 
-**Example:** In a 5-node system with majority quorums, any 3 nodes form a quorum. Reads from any 3 nodes and writes to any 3 nodes guarantee that read and write quorums intersect, ensuring consistency.
+## Why not just use majorities?
 
-## Features
+Majority quorums are safe and simple, but they are rarely the
+highest-throughput choice. With 9 identical nodes:
 
-- **Expression algebra** for defining quorum systems (OR, AND, Choose)
-- **LP-based optimization** for optimal read/write strategies
-- **Multi-metric analysis**: load, capacity, network overhead, latency
-- **Resilience calculation** for fault tolerance analysis
-- **Heuristic search** for discovering optimal configurations
+| Read fraction | Majority | 3×3 grid | Read-one / write-all |
+|---|---|---|---|
+| 50% | 1.80× | **3.00×** | 1.80× |
+| 90% | 1.80× | 3.00× | **5.00×** |
+| 99% | 1.80× | 3.00× | **8.33×** |
 
-## When to Use Quoracle
-
-- **Designing distributed databases** - optimize replica strategies
-- **Research** - analyze quorum system properties and trade-offs
-- **System analysis** - understand fault tolerance and performance
-- **Protocol design** - find optimal quorum configurations
-
-## Installation
-
-Add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-quoracle = "1.2"
-```
-
-## Performance
-
-Rust implementation is **2-10× faster** than Python reference:
-
-- Quorum enumeration: 3-10× faster
-- Load calculations: 2-10× faster
-- Heuristic search: 3-10× faster
-- LP optimization: ~1.5× faster
+(Capacity relative to one node, using each system's optimal strategy.)
+Quoracle computes numbers like these for your nodes and your workload.
 
 ## Links
 
-- [GitHub Repository](https://github.com/gregburd/quoracle)
-- [Crates.io](https://crates.io/crates/quoracle)
-- [API Documentation](https://docs.rs/quoracle)
-
-## License
-
-Licensed under MIT OR Apache-2.0
+- Source: [codeberg.org/gregburd/rs-quoracle](https://codeberg.org/gregburd/rs-quoracle)
+  (mirror: [github.com/gburd/rs-quoracle](https://github.com/gburd/rs-quoracle))
+- Crate: [crates.io/crates/quoracle](https://crates.io/crates/quoracle)
+- API: [docs.rs/quoracle](https://docs.rs/quoracle)

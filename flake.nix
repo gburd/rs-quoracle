@@ -1,5 +1,5 @@
 {
-  description = "Quoracle - A library for constructing and analyzing read-write quorum systems";
+  description = "Quoracle - construct and analyze read-write quorum systems";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -13,93 +13,100 @@
   outputs = { self, nixpkgs, flake-utils, rust-overlay }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs {
-          inherit system overlays;
+          inherit system;
+          overlays = [ (import rust-overlay) ];
         };
+        lib = pkgs.lib;
 
+        # Latest stable toolchain (pinned by flake.lock via rust-overlay).
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-          extensions = [ "rust-src" "rustfmt" "clippy" ];
+          extensions = [ "rust-src" "rustfmt" "clippy" "llvm-tools-preview" ];
+        };
+        rustPlatform = pkgs.makeRustPlatform {
+          cargo = rustToolchain;
+          rustc = rustToolchain;
         };
 
-        # Build inputs for the Rust package
-        nativeBuildInputs = with pkgs; [
-          rustToolchain
-          pkg-config
-        ];
+        cargoToml = lib.importTOML ./Cargo.toml;
 
-        buildInputs = with pkgs; [
-          # CBC solver (optional, for cbc feature)
-          coin-cbc
-        ] ++ lib.optionals stdenv.isDarwin [
-          darwin.apple_sdk.frameworks.Security
-        ];
-
-        # The main package
-        quoracle = pkgs.rustPlatform.buildRustPackage {
-          pname = "quoracle";
-          version = "1.2.1";
-          src = ./.;
-
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-          };
-
-          inherit nativeBuildInputs buildInputs;
-
-          # Run tests during build
-          doCheck = true;
-
-          meta = with pkgs.lib; {
-            description = "A library for constructing and analyzing read-write quorum systems";
-            homepage = "https://github.com/gregburd/quoracle";
-            license = with licenses; [ mit asl20 ];
-            maintainers = [ ];
-            platforms = platforms.unix;
-          };
+        # Only the files cargo needs (the README and guide are doctested).
+        src = lib.fileset.toSource {
+          root = ./.;
+          fileset = lib.fileset.unions [
+            ./Cargo.toml
+            ./Cargo.lock
+            ./build.rs
+            ./src
+            ./tests
+            ./examples
+            ./benches
+            ./README.md
+            ./docs/src/quick-start.md
+            ./docs/src/guide.md
+          ];
         };
 
+        mkQuoracle = { solver ? "microlp" }:
+          rustPlatform.buildRustPackage {
+            pname = "quoracle" + lib.optionalString (solver != "microlp") "-${solver}";
+            inherit (cargoToml.package) version;
+            inherit src;
+            cargoLock.lockFile = ./Cargo.lock;
+
+            buildNoDefaultFeatures = true;
+            buildFeatures = [ solver ];
+
+            nativeBuildInputs = lib.optionals (solver == "cbc") [ pkgs.pkg-config ];
+            buildInputs = lib.optionals (solver == "cbc") [ pkgs.cbc ];
+
+            # Library crate: the useful output is a tested build, not a binary.
+            doCheck = true;
+
+            meta = {
+              description = cargoToml.package.description;
+              homepage = cargoToml.package.repository;
+              license = with lib.licenses; [ mit asl20 ];
+              platforms = lib.platforms.unix;
+            };
+          };
+
+        quoracle = mkQuoracle { };
+        quoracle-cbc = mkQuoracle { solver = "cbc"; };
       in
       {
         packages = {
           default = quoracle;
-          inherit quoracle;
+          inherit quoracle quoracle-cbc;
         };
 
-        devShells.default = pkgs.mkShell {
-          inherit buildInputs;
-          nativeBuildInputs = nativeBuildInputs ++ (with pkgs; [
-            # Development tools
-            rust-analyzer
-            cargo-edit
-            cargo-audit
-            cargo-deny
-            cargo-tarpaulin
+        checks = {
+          inherit quoracle quoracle-cbc;
 
-            # Documentation
-            mdbook
-          ]);
-
-          RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
-
-          shellHook = ''
-            echo "🔬 Quoracle development environment"
-            echo "Rust: $(rustc --version)"
-            echo "Cargo: $(cargo --version)"
-            echo ""
-            echo "Available commands:"
-            echo "  cargo build        - Build the library"
-            echo "  cargo test         - Run tests"
-            echo "  cargo clippy       - Run linter"
-            echo "  cargo doc --open   - Generate and open docs"
-            echo "  cargo bench        - Run benchmarks"
+          fmt = pkgs.runCommand "quoracle-fmt" { nativeBuildInputs = [ rustToolchain ]; } ''
+            cd ${./.}
+            cargo fmt --all -- --check
+            touch $out
           '';
         };
 
-        # Expose checks for CI
-        checks = {
-          inherit quoracle;
+        devShells.default = pkgs.mkShell {
+          nativeBuildInputs = [
+            rustToolchain
+            pkgs.pkg-config
+            pkgs.rust-analyzer
+            pkgs.cargo-llvm-cov
+            pkgs.cargo-deny
+            pkgs.cargo-edit
+            pkgs.cargo-msrv
+            pkgs.mdbook
+          ];
+          buildInputs = [ pkgs.cbc ];
+
+          RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
         };
+
+        formatter = pkgs.nixpkgs-fmt;
       }
     );
 }

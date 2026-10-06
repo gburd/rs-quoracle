@@ -4,7 +4,7 @@
 
 #![allow(clippy::many_single_char_names, clippy::print_stdout)]
 
-use quoracle::search::{search, SearchConfig};
+use quoracle::{search, SearchConfig};
 use quoracle::{Distribution, Node, Objective};
 use std::time::Duration;
 

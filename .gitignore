@@ -1,18 +1,36 @@
 # Rust
 /target/
-Cargo.lock
 **/*.rs.bk
 *.pdb
 
-# IDE
-.vscode/
-.idea/
+# Generated docs
+/docs/book/
+
+# Nix / direnv
+/result*
+.direnv/
+.envrc
+
+# Editors and local agent configuration
+/.vscode
+/.idea
+.claude/
+.kiro/
+.mcp.json
+AGENTS.md
+.agent-steering-domains.md
 *.swp
 *.swo
 *~
 
-# direnv / nix
-.direnv/
+# Sandbox shell dotfiles that appear in this checkout
+/.bash_profile
+/.bashrc
+/.profile
+/.zprofile
+/.zshrc
+/.ripgreprc
+/.gitmodules
 
 # OS
 .DS_Store

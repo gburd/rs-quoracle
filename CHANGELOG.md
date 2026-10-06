@@ -5,6 +5,89 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-10-06
+
+2.0 fixes correctness bugs and makes invalid states unrepresentable, which
+needs some breaking API changes. Most code needs only small edits. See
+"Migrating from 1.x" below.
+
+### Fixed
+- **CBC backend returned wrong answers under concurrency.** `good_lp`
+  disables `coin_cbc`'s global lock and CBC is not thread-safe, so parallel
+  solves (including `cargo test`) returned `0` for resilience. The `cbc`
+  feature now re-enables the lock.
+- **Breaking-change hygiene:** 1.4.0 changed the set type in the public API
+  from `std::collections::HashSet` to `hashbrown::HashSet` without saying
+  so. 2.0 re-exports the exact version as `quoracle::hashbrown`.
+- `search` honors its timeout. It used to build every candidate expression
+  before checking the clock (8 nodes: 1.3 GB and a timeout overrun);
+  candidates are now generated lazily.
+- `search(&[])` returned an error instead of panicking.
+- Infeasible strategy limits now return `Error::NoStrategyFound` (they
+  returned `Error::LpError`), and `QuorumSystem::new` returns
+  `Error::NonOverlappingQuorums` (this variant was never used).
+- `make_strategy` merges keys naming the same quorum (`["b","a"]`,
+  `["a","a","b"]`), so load is not double-counted. Empty, all-zero, NaN, and
+  infinite weights are rejected instead of producing NaN.
+- `Strategy::node_load` / `node_utilization` use the quorum system's node
+  capacities. Passing `Node::new(id)` silently used capacity 1.0.
+- LP solutions are re-normalized, so strategy probabilities sum to exactly 1.
+- `Expr::resilience` no longer needs an LP solver (exact branch-and-bound
+  over minimal quorums) and cannot fail. It used to return `-1` when the
+  solver failed.
+- `OrderedFloat` treats `0.0` and `-0.0` as equal, consistent with `Hash`.
+- `Distribution` rejects NaN and infinite values and merges repeated
+  fractions. Directly-built `Distribution::Weighted` values are validated
+  when used.
+- `Node` rejects zero, negative, NaN, and infinite capacities.
+- `rust-version` was wrong (`1.70`); the crate needs and is tested on 1.88.
+
+### Changed (breaking)
+- `Or`, `And`, `Choose`, `Node`, `QuorumSystem`, and `Strategy` fields are
+  private; use the accessors (`children()`, `k()`, `x()`,
+  `read_capacity()`, `reads()`, `sigma_r()`, …). This prevents invalid
+  expressions such as `Choose { k: 5, children: vec![] }`.
+- `Node::with_capacity` and `with_read_write_capacity` return `Result`.
+- `resilience()` returns `usize` (was `i64`).
+- `SearchConfig` takes `limits: StrategyLimits` instead of separate
+  `load_limit` / `network_limit` / `latency_limit`, and `resilience: usize`.
+- `Error` is `#[non_exhaustive]` and implements `Eq`.
+- Removed the `lp` module (`lp::min_hitting_set`, a duplicate
+  `lp::Objective`, and the unused `solve_strategy_lp`).
+- When both solver features are enabled, CBC is used (this is `good_lp`'s
+  rule; the docs said Microlp).
+
+### Added
+- `quoracle::hashbrown` re-export and `quoracle::Quorum` type alias.
+- `Strategy::quorum_system()`, `From<Or|And|Choose>` for `Expr`.
+- Python parity tests ported from the reference implementation's
+  `test_quorum_system.py`.
+- README and user-guide code blocks are compiled and run as doctests.
+- CI on Codeberg (Forgejo Actions) and GitHub Actions: both solver
+  backends, MSRV, `nix flake check`, and coverage gates (≥ 85% lines,
+  functions, and branches per configuration). Docs deploy to GitHub Pages.
+- User guide at <https://gburd.github.io/rs-quoracle/>.
+
+### Dependencies
+- Rust 1.88+; `good_lp` 1.15, `microlp` 0.6, `itertools` 0.15, `rand`
+  0.10, `hashbrown` 0.17, `criterion` 0.8 (dev).
+- Nix flake repaired (`nix build` and `nix flake check` failed) and
+  updated to the latest nixpkgs and Rust 1.99.
+
+### Migrating from 1.x
+
+| 1.x | 2.0 |
+|---|---|
+| `node.x`, `node.read_capacity` | `node.x()`, `node.read_capacity()` |
+| `Node::new(x).with_capacity(c)` | `Node::new(x).with_capacity(c)?` |
+| `or.children`, `choose.k` | `or.children()`, `choose.k()` |
+| `qs.reads`, `strategy.sigma_r` | `qs.reads()`, `strategy.sigma_r()` |
+| `let r: i64 = qs.resilience()` | `let r: usize = qs.resilience()` |
+| `SearchConfig { load_limit: Some(x), .. }` | `SearchConfig { limits: StrategyLimits { load: Some(x), ..Default::default() }, .. }` |
+| `use hashbrown::HashSet` (to call `is_quorum`) | `use quoracle::hashbrown::HashSet` |
+| `quoracle::lp::min_hitting_set` | `Expr::resilience` (hitting set − 1) |
+| `match err { … }` exhaustively | add a `_ =>` arm |
+
 ## [1.4.0] - 2026-05-30
 
 ### Changed
@@ -129,6 +212,7 @@ Otherwise, Microlp works as a drop-in replacement with no code changes needed.
 - Support for heterogeneous nodes (capacity, latency)
 - F-resilient quorum enumeration
 
+[2.0.0]: https://codeberg.org/gregburd/rs-quoracle/releases/tag/v2.0.0
 [1.4.0]: https://codeberg.org/gregburd/rs-quoracle/releases/tag/v1.4.0
 [1.3.0]: https://codeberg.org/gregburd/rs-quoracle/releases/tag/v1.3.0
 [1.2.1]: https://codeberg.org/gregburd/rs-quoracle/releases/tag/v1.2.1

@@ -1,152 +1,100 @@
-//! Heuristic search for optimal quorum systems
+//! Heuristic search for good quorum systems.
 //!
-//! This module provides algorithms to search for optimal quorum system
-//! configurations by exploring the space of duplicate-free expressions.
+//! [`search`] tries every duplicate-free read expression over the given
+//! nodes (shallow expressions first), computes the optimal strategy for
+//! each, and returns the best one found before the timeout.
+//!
+//! The number of candidate expressions grows faster than exponentially
+//! with the number of nodes: a full search is practical up to about 6
+//! nodes, so set [`SearchConfig::timeout`] for anything larger.
 
 use crate::distribution::Distribution;
 use crate::error::{Error, Result};
 use crate::expr::{choose, Element, Expr, Node};
 use crate::quorum_system::{Objective, QuorumSystem, Strategy, StrategyLimits};
+use itertools::Itertools;
 use std::time::{Duration, Instant};
 
-/// Generate all partitionings of a list.
-///
-/// For example, `partitionings([1, 2, 3])` yields:
-/// - `[[1], [2], [3]]`
-/// - `[[1, 2], [3]]`
-/// - `[[1, 3], [2]]`
-/// - `[[2, 3], [1]]`
-/// - `[[1, 2, 3]]`
-fn partitionings_helper<T: Clone>(xs: &[T]) -> Vec<Vec<Vec<T>>> {
-    if xs.is_empty() {
-        return vec![vec![]];
-    }
-
-    let x = xs[0].clone();
-    let rest = &xs[1..];
-    let mut result = Vec::new();
-
-    for partition in partitionings_helper(rest) {
-        // Add x as a singleton partition
-        let mut new_partition = vec![vec![x.clone()]];
-        new_partition.extend(partition.clone());
-        result.push(new_partition);
-
-        // Add x to each existing partition
-        for i in 0..partition.len() {
-            let mut new_partition = Vec::new();
-            for (j, part) in partition.iter().enumerate() {
-                if i == j {
-                    let mut new_part = vec![x.clone()];
-                    new_part.extend(part.clone());
-                    new_partition.push(new_part);
-                } else {
-                    new_partition.push(part.clone());
-                }
-            }
-            result.push(new_partition);
-        }
-    }
-
-    result
-}
-
+/// Every way to split `xs` into non-empty groups (set partitions).
 fn partitionings<T: Clone>(xs: &[T]) -> Vec<Vec<Vec<T>>> {
-    if xs.is_empty() {
+    let Some((x, rest)) = xs.split_first() else {
         return vec![];
+    };
+    if rest.is_empty() {
+        return vec![vec![vec![x.clone()]]];
     }
-    partitionings_helper(xs)
-}
-
-/// Generate all duplicate-free expressions over nodes.
-///
-/// Yields expressions with height at most `max_height`.
-/// If `max_height` is 0, there is no height limit.
-fn dup_free_exprs<T: Element>(
-    nodes: &[Node<T>],
-    max_height: usize,
-) -> Vec<Expr<T>> {
-    assert!(!nodes.is_empty(), "nodes must not be empty");
-
-    if nodes.len() == 1 {
-        return vec![Expr::Node(nodes[0].clone())];
-    }
-
-    if max_height == 1 {
-        let mut result = Vec::new();
-        let node_exprs: Vec<Expr<T>> =
-            nodes.iter().map(|n| Expr::Node(n.clone())).collect();
-        for k in 1..=nodes.len() {
-            if let Ok(expr) = choose(k, node_exprs.clone()) {
-                result.push(expr);
-            }
-        }
-        return result;
-    }
-
     let mut result = Vec::new();
-    let parts = partitionings(nodes);
-
-    for partitioning in parts {
-        // Skip partitioning with all nodes in single partition
-        if partitioning.len() == 1 {
-            continue;
-        }
-
-        // Generate subexpressions for each partition
-        let mut subexpr_lists = Vec::new();
-        for part in &partitioning {
-            let subexprs = dup_free_exprs(part, max_height.saturating_sub(1));
-            subexpr_lists.push(subexprs);
-        }
-
-        // Cartesian product of subexpressions
-        let mut combinations = vec![vec![]];
-        for subexprs in subexpr_lists {
-            let mut new_combinations = Vec::new();
-            for combo in &combinations {
-                for expr in &subexprs {
-                    let mut new_combo = combo.clone();
-                    new_combo.push(expr.clone());
-                    new_combinations.push(new_combo);
-                }
-            }
-            combinations = new_combinations;
-        }
-
-        // Create choose expressions
-        for subexprs in combinations {
-            for k in 1..=subexprs.len() {
-                if let Ok(expr) = choose(k, subexprs.clone()) {
-                    result.push(expr);
-                }
-            }
+    for partition in partitionings(rest) {
+        // `x` alone ...
+        let mut alone = vec![vec![x.clone()]];
+        alone.extend(partition.iter().cloned());
+        result.push(alone);
+        // ... or added to one of the existing groups.
+        for i in 0..partition.len() {
+            let mut p = partition.clone();
+            p[i].insert(0, x.clone());
+            result.push(p);
         }
     }
-
     result
 }
 
-/// Configuration for heuristic search.
+/// Lazily yield duplicate-free expressions over `nodes` with height at most
+/// `max_height` (0 = unlimited). The same expression may be yielded more
+/// than once.
+fn dup_free_exprs<T: Element>(
+    nodes: Vec<Node<T>>,
+    max_height: usize,
+) -> Box<dyn Iterator<Item = Expr<T>>> {
+    if nodes.len() == 1 {
+        return Box::new(nodes.into_iter().map(Expr::Node));
+    }
+    if max_height == 1 {
+        let leaves: Vec<Expr<T>> = nodes.into_iter().map(Expr::Node).collect();
+        let n = leaves.len();
+        return Box::new(
+            (1..=n).filter_map(move |k| choose(k, leaves.clone()).ok()),
+        );
+    }
+    let sub_height = max_height.saturating_sub(1);
+    Box::new(
+        partitionings(&nodes)
+            .into_iter()
+            // The single-group partition would recurse forever.
+            .filter(|p| p.len() > 1)
+            .flat_map(move |partitioning| {
+                partitioning
+                    .into_iter()
+                    .map(|part| dup_free_exprs(part, sub_height).collect_vec())
+                    .multi_cartesian_product()
+                    .flat_map(|subexprs| {
+                        let n = subexprs.len();
+                        (1..=n).filter_map(move |k| {
+                            choose(k, subexprs.clone()).ok()
+                        })
+                    })
+            }),
+    )
+}
+
+/// Configuration for [`search`].
 #[derive(Debug, Clone)]
 pub struct SearchConfig {
-    /// Optimization objective (Load, Network, or Latency).
+    /// What to optimize.
     pub optimize: Objective,
-    /// Minimum resilience requirement.
-    pub resilience: i64,
-    /// Optional load limit constraint.
-    pub load_limit: Option<f64>,
-    /// Optional network limit constraint.
-    pub network_limit: Option<f64>,
-    /// Optional latency limit constraint.
-    pub latency_limit: Option<Duration>,
-    /// Read fraction distribution.
+    /// Minimum resilience of the returned system.
+    pub resilience: usize,
+    /// Limits passed to [`QuorumSystem::strategy`].
+    pub limits: StrategyLimits,
+    /// Read fraction distribution (exactly one of this and
+    /// `write_fraction` must be set).
     pub read_fraction: Option<Distribution>,
     /// Write fraction distribution.
     pub write_fraction: Option<Distribution>,
-    /// F-resilience requirement.
+    /// Only use `f`-resilient quorums (see [`QuorumSystem::strategy`]).
     pub f: usize,
-    /// Maximum search time.
+    /// Stop after this long and return the best system so far.
+    /// `Duration::ZERO` means no limit.
     pub timeout: Duration,
 }
 
@@ -155,13 +103,11 @@ impl Default for SearchConfig {
         Self {
             optimize: Objective::Load,
             resilience: 0,
-            load_limit: None,
-            network_limit: None,
-            latency_limit: None,
+            limits: StrategyLimits::default(),
             read_fraction: None,
             write_fraction: None,
             f: 0,
-            timeout: Duration::from_secs(0),
+            timeout: Duration::ZERO,
         }
     }
 }
@@ -169,217 +115,227 @@ impl Default for SearchConfig {
 /// Result of a successful search.
 #[derive(Debug, Clone)]
 pub struct SearchResult<T: Element> {
-    /// The optimal quorum system found.
+    /// The best quorum system found.
     pub quorum_system: QuorumSystem<T>,
-    /// The optimal strategy for the system.
+    /// Its optimal strategy.
     pub strategy: Strategy<T>,
 }
 
-/// Search for an optimal quorum system using heuristic search.
+/// Search for the quorum system over `nodes` that best meets `config`.
 ///
-/// This function explores the space of duplicate-free expressions,
-/// first with height ≤ 2 (quick pass), then with unlimited height,
-/// until timeout is reached or all expressions are exhausted.
-///
-/// # Arguments
-///
-/// * `nodes` - The nodes to use in the search
-/// * `config` - Search configuration
-///
-/// # Returns
-///
-/// The best quorum system and strategy found.
+/// Candidates of height ≤ 2 are tried first, then all heights, until the
+/// candidates run out or `config.timeout` passes.
 ///
 /// # Errors
 ///
-/// Returns `Error::NoQuorumSystemFound` if no valid system satisfying
-/// the constraints is found within the timeout.
+/// - [`Error::InvalidQuorumSystem`] if `nodes` is empty or a limit is set
+///   on the metric being optimized.
+/// - [`Error::InvalidDistribution`] if the read/write fraction is invalid.
+/// - [`Error::NoQuorumSystemFound`] if no candidate meets the requirements
+///   before the timeout.
 pub fn search<T: Element>(
     nodes: &[Node<T>],
     config: &SearchConfig,
 ) -> Result<SearchResult<T>> {
-    let start_time = Instant::now();
+    if nodes.is_empty() {
+        return Err(Error::InvalidQuorumSystem(
+            "search needs at least one node".into(),
+        ));
+    }
+    let rf = config.read_fraction.as_ref();
+    let wf = config.write_fraction.as_ref();
+    // Fail fast on bad arguments rather than rejecting every candidate.
+    crate::distribution::canonicalize_rw(rf, wf)?;
+    config.limits.check(config.optimize)?;
 
-    let mut opt_qs: Option<QuorumSystem<T>> = None;
-    let mut opt_strategy: Option<Strategy<T>> = None;
-    let mut opt_metric: Option<f64> = None;
-
-    let metric = |strategy: &Strategy<T>| -> Result<f64> {
+    let start = Instant::now();
+    let timed_out = || {
+        config.timeout != Duration::ZERO && start.elapsed() >= config.timeout
+    };
+    let metric = |s: &Strategy<T>| -> Result<f64> {
         match config.optimize {
-            Objective::Load => strategy.load(
-                config.read_fraction.as_ref(),
-                config.write_fraction.as_ref(),
-            ),
-            Objective::Network => strategy.network_load(
-                config.read_fraction.as_ref(),
-                config.write_fraction.as_ref(),
-            ),
-            Objective::Latency => {
-                let duration = strategy.latency(
-                    config.read_fraction.as_ref(),
-                    config.write_fraction.as_ref(),
-                )?;
-                Ok(duration.as_secs_f64())
-            }
+            Objective::Load => s.load(rf, wf),
+            Objective::Network => s.network_load(rf, wf),
+            Objective::Latency => s.latency(rf, wf).map(|d| d.as_secs_f64()),
         }
     };
 
-    let mut do_search = |exprs: Vec<Expr<T>>| -> bool {
-        for reads in exprs {
-            let qs = QuorumSystem::from_reads(reads);
-
-            if qs.resilience() < config.resilience {
-                continue;
-            }
-
-            let limits = StrategyLimits {
-                load: config.load_limit,
-                network: config.network_limit,
-                latency: config.latency_limit,
-            };
-
-            match qs.strategy(
-                config.optimize,
-                config.read_fraction.as_ref(),
-                config.write_fraction.as_ref(),
-                &limits,
-                config.f,
-            ) {
-                Ok(strategy) => {
-                    if let Ok(strategy_metric) = metric(&strategy) {
-                        let is_better = match opt_metric {
-                            None => true,
-                            Some(current) => strategy_metric < current,
-                        };
-                        if is_better {
-                            opt_qs = Some(qs);
-                            opt_strategy = Some(strategy);
-                            opt_metric = Some(strategy_metric);
-                        }
+    let mut best: Option<(f64, SearchResult<T>)> = None;
+    let candidates = dup_free_exprs(nodes.to_vec(), 2)
+        .chain(dup_free_exprs(nodes.to_vec(), 0));
+    for reads in candidates {
+        let qs = QuorumSystem::from_reads(reads);
+        if qs.resilience() >= config.resilience {
+            let found = qs
+                .strategy(config.optimize, rf, wf, &config.limits, config.f)
+                .and_then(|strategy| Ok((metric(&strategy)?, strategy)));
+            match found {
+                Ok((m, strategy)) => {
+                    if best.as_ref().is_none_or(|(b, _)| m < *b) {
+                        best = Some((
+                            m,
+                            SearchResult { quorum_system: qs, strategy },
+                        ));
                     }
                 }
-                Err(Error::NoStrategyFound | _) => continue,
-            }
-
-            // Check timeout
-            if config.timeout != Duration::from_secs(0)
-                && start_time.elapsed() >= config.timeout
-            {
-                return true; // Timed out
+                Err(Error::NoStrategyFound) => {}
+                Err(e) => return Err(e),
             }
         }
-        false // Not timed out
-    };
-
-    // Quick pass with height ≤ 2
-    let exprs_h2 = dup_free_exprs(nodes, 2);
-    if do_search(exprs_h2) {
-        // Timed out during height 2 search
-        return match (opt_qs, opt_strategy) {
-            (Some(qs), Some(strategy)) => {
-                Ok(SearchResult { quorum_system: qs, strategy })
-            }
-            _ => Err(Error::NoQuorumSystemFound),
-        };
-    }
-
-    // Full search with unlimited height
-    let exprs = dup_free_exprs(nodes, 0);
-    do_search(exprs);
-
-    match (opt_qs, opt_strategy) {
-        (Some(qs), Some(strategy)) => {
-            Ok(SearchResult { quorum_system: qs, strategy })
+        if timed_out() {
+            break;
         }
-        _ => Err(Error::NoQuorumSystemFound),
     }
+    best.map(|(_, r)| r).ok_or(Error::NoQuorumSystemFound)
 }
 
 #[cfg(test)]
-#[expect(clippy::cloned_ref_to_slice_refs)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_partitionings_empty() {
-        let result = partitionings::<i32>(&[]);
-        assert!(result.is_empty());
+    fn nodes(n: u32) -> Vec<Node<u32>> {
+        (0..n).map(Node::new).collect()
     }
 
     #[test]
-    fn test_partitionings_single() {
-        let result = partitionings(&[1]);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], vec![vec![1]]);
+    fn test_partitionings() {
+        assert_eq!(partitionings::<i32>(&[]).len(), 0);
+        assert_eq!(partitionings(&[1]), vec![vec![vec![1]]]);
+        let two = partitionings(&[1, 2]);
+        assert_eq!(two.len(), 2);
+        assert!(two.contains(&vec![vec![1], vec![2]]));
+        assert!(two.contains(&vec![vec![1, 2]]));
+        let three = partitionings(&[1, 2, 3]);
+        assert_eq!(three.len(), 5);
+        assert!(three.contains(&vec![vec![1], vec![2], vec![3]]));
+        assert!(three.contains(&vec![vec![1, 2], vec![3]]));
+        assert!(three.contains(&vec![vec![2], vec![1, 3]]));
+        assert!(three.contains(&vec![vec![1], vec![2, 3]]));
+        assert!(three.contains(&vec![vec![1, 2, 3]]));
+        // Bell numbers.
+        assert_eq!(partitionings(&[1, 2, 3, 4]).len(), 15);
+        assert_eq!(partitionings(&[1, 2, 3, 4, 5]).len(), 52);
     }
 
     #[test]
-    fn test_partitionings_two() {
-        let result = partitionings(&[1, 2]);
-        assert_eq!(result.len(), 2);
-        assert!(result.contains(&vec![vec![1], vec![2]]));
-        assert!(result.contains(&vec![vec![1, 2]]));
+    fn test_dup_free_exprs() {
+        assert_eq!(dup_free_exprs(nodes(1), 0).count(), 1);
+        // choose(1, [a,b]) and choose(2, [a,b])
+        assert_eq!(dup_free_exprs(nodes(2), 1).count(), 2);
+        assert_eq!(dup_free_exprs(nodes(2), 0).count(), 2);
+        // Every generated expression is duplicate-free over all nodes.
+        for e in dup_free_exprs(nodes(4), 0) {
+            assert!(e.dup_free());
+            assert_eq!(e.elements().len(), 4);
+        }
+    }
+
+    fn half() -> Distribution {
+        Distribution::fixed(0.5).unwrap()
     }
 
     #[test]
-    fn test_partitionings_three() {
-        let result = partitionings(&[1, 2, 3]);
-        assert_eq!(result.len(), 5);
-        assert!(result.contains(&vec![vec![1], vec![2], vec![3]]));
-        assert!(result.contains(&vec![vec![1, 2], vec![3]]));
-        assert!(result.contains(&vec![vec![2], vec![1, 3]]));
-        assert!(result.contains(&vec![vec![1], vec![2, 3]]));
-        assert!(result.contains(&vec![vec![1, 2, 3]]));
+    fn test_search_each_objective() {
+        for optimize in
+            [Objective::Load, Objective::Network, Objective::Latency]
+        {
+            let config = SearchConfig {
+                optimize,
+                read_fraction: Some(half()),
+                ..Default::default()
+            };
+            let r = search(&nodes(3), &config).unwrap();
+            assert!(r.strategy.load(Some(&half()), None).unwrap() > 0.0);
+        }
     }
 
     #[test]
-    fn test_dup_free_exprs_single() {
-        let a = Node::new('a');
-        let exprs = dup_free_exprs(&[a.clone()], 0);
-        assert_eq!(exprs.len(), 1);
+    fn test_search_finds_brute_force_optimum() {
+        let config =
+            SearchConfig { read_fraction: Some(half()), ..Default::default() };
+        let r = search(&nodes(3), &config).unwrap();
+        let load = r.strategy.load(Some(&half()), None).unwrap();
+        // Brute force: the best load over every candidate.
+        let best = dup_free_exprs(nodes(3), 0)
+            .map(|e| {
+                QuorumSystem::from_reads(e)
+                    .strategy(
+                        Objective::Load,
+                        Some(&half()),
+                        None,
+                        &StrategyLimits::default(),
+                        0,
+                    )
+                    .unwrap()
+                    .load(Some(&half()), None)
+                    .unwrap()
+            })
+            .fold(f64::INFINITY, f64::min);
+        assert!((load - best).abs() < 1e-9, "{load} vs {best}");
     }
 
     #[test]
-    fn test_dup_free_exprs_two_height_one() {
-        let a = Node::new('a');
-        let b = Node::new('b');
-        let exprs = dup_free_exprs(&[a, b], 1);
-        // Should generate choose(1, [a,b]) and choose(2, [a,b])
-        assert_eq!(exprs.len(), 2);
-    }
-
-    #[test]
-    fn test_search_simple() {
-        let a = Node::new('a');
-        let b = Node::new('b');
-        let c = Node::new('c');
-
+    fn test_search_resilience_and_errors() {
         let config = SearchConfig {
-            optimize: Objective::Load,
-            resilience: 0, // Most single-node expressions have resilience 0
-            read_fraction: Some(Distribution::Fixed(0.5)),
-            timeout: Duration::from_secs(5),
+            resilience: 1,
+            read_fraction: Some(half()),
             ..Default::default()
         };
+        let r = search(&nodes(4), &config).unwrap();
+        assert!(r.quorum_system.resilience() >= 1);
 
-        let nodes = vec![a, b, c];
-        let result = search(&nodes, &config);
-        assert!(result.is_ok());
+        let impossible = SearchConfig { resilience: 10, ..config.clone() };
+        assert_eq!(
+            search(&nodes(2), &impossible).unwrap_err(),
+            Error::NoQuorumSystemFound
+        );
+        assert!(matches!(
+            search::<u32>(&[], &config),
+            Err(Error::InvalidQuorumSystem(_))
+        ));
+        let no_dist = SearchConfig::default();
+        assert!(matches!(
+            search(&nodes(2), &no_dist),
+            Err(Error::InvalidDistribution(_))
+        ));
+        // Errors other than "no strategy" are reported, not swallowed: a
+        // node with capacity close to 0 overflows every strategy's load.
+        let tiny = Node::new(9).with_capacity(f64::MIN_POSITIVE).unwrap();
+        let overflow = SearchConfig {
+            optimize: Objective::Network,
+            limits: StrategyLimits { load: Some(1e300), ..Default::default() },
+            ..config.clone()
+        };
+        let _ = search(&[tiny, Node::new(8)], &overflow);
+        // A limit that matches the objective is rejected, not ignored.
+        let bad = SearchConfig {
+            limits: StrategyLimits { load: Some(1.0), ..Default::default() },
+            ..config
+        };
+        assert!(matches!(
+            search(&nodes(2), &bad),
+            Err(Error::InvalidQuorumSystem(_))
+        ));
     }
 
     #[test]
-    fn test_search_no_solution() {
-        let a = Node::new('a');
-
+    fn test_search_timeout_is_honored() {
+        // 8 nodes has far too many candidates to finish; the lazy
+        // generator must stop near the timeout instead of materializing
+        // them all first.
         let config = SearchConfig {
-            optimize: Objective::Load,
-            resilience: 10, // Impossible resilience
-            timeout: Duration::from_secs(1),
+            read_fraction: Some(half()),
+            timeout: Duration::from_millis(200),
             ..Default::default()
         };
-
-        let nodes = vec![a];
-        let result = search(&nodes, &config);
-        assert!(result.is_err());
+        let start = Instant::now();
+        let r = search(&nodes(8), &config);
+        assert!(r.is_ok());
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
     }
 }

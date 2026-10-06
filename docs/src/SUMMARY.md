@@ -2,12 +2,6 @@
 
 [Introduction](./introduction.md)
 
-# User Guide
-
-- [Quick Start](./quick-start.md)
-- [Examples](./examples.md)
-- [Performance](./performance.md)
-
-# Reference
-
-- [API Documentation](./api.md)
+- [Quick start](./quick-start.md)
+- [Guide](./guide.md)
+- [API reference](./api.md)

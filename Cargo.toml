@@ -1,17 +1,16 @@
 [package]
 name = "quoracle"
-version = "1.4.0"
+version = "2.0.0"
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.88"
 authors = ["Greg Burd <greg@burd.me>"]
-description = "A library for constructing and analyzing read-write quorum systems"
+description = "Construct, analyze, and optimize read-write quorum systems: load, capacity, latency, network cost, and fault tolerance"
 repository = "https://codeberg.org/gregburd/rs-quoracle"
-homepage = "https://codeberg.org/gregburd/rs-quoracle"
 documentation = "https://docs.rs/quoracle"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 keywords = ["distributed-systems", "quorum", "consensus", "optimization"]
-categories = ["algorithms", "mathematics"]
+categories = ["algorithms", "mathematics", "science"]
 include = [
     "/src/**/*.rs",
     "/benches/**/*.rs",
@@ -20,39 +19,50 @@ include = [
     "/build.rs",
     "/Cargo.toml",
     "/README.md",
+    "/docs/src/quick-start.md",
+    "/docs/src/guide.md",
     "/CHANGELOG.md",
     "/SOLVERS.md",
+    "/NOTICE",
     "/LICENSE-MIT",
     "/LICENSE-APACHE-2.0",
-    "/rustfmt.toml",
 ]
 
 [features]
 default = ["microlp"]
-# Mutually exclusive solver features - only enable one at a time
+# LP solver backends. Enable at least one. If both are enabled, CBC is used.
+# microlp: pure Rust, no system dependencies.
 microlp = ["good_lp/microlp"]
-cbc = ["good_lp/coin_cbc"]
+# cbc: COIN-OR CBC (needs the system CBC library). good_lp turns off
+# coin_cbc's `singlethread-cbc` guard, but CBC is not thread-safe, so we turn
+# it back on; without it concurrent solves return wrong answers.
+cbc = ["good_lp/coin_cbc", "dep:coin_cbc", "coin_cbc/singlethread-cbc"]
 
 [dependencies]
 thiserror = "2.0"
-# LP solver: Microlp (pure Rust, silent, supports binary variables) by default
-# For best performance, use CBC: good_lp = { version = "1.8", features = ["coin_cbc"] }
-# NOTE: Clarabel cannot be used - it doesn't support binary variables needed for resilience
-good_lp = { version = "1.8", default-features = false }
-itertools = "0.13"
-rand = "0.8"
-hashbrown = "0.15"
+good_lp = { version = "1.15", default-features = false }
+coin_cbc = { version = "0.1.9", optional = true, default-features = false }
+itertools = "0.15"
+rand = { version = "0.10", default-features = false, features = ["std", "thread_rng"] }
+# Re-exported as `quoracle::hashbrown`: its set/map types appear in the API.
+hashbrown = "0.17"
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 [[bench]]
 name = "benchmarks"
 harness = false
 
+[package.metadata.docs.rs]
+# Build docs with the pure-Rust default solver (no system libraries needed).
+features = ["microlp"]
+rustdoc-args = ["--cfg", "docsrs"]
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(docsrs)"] }
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

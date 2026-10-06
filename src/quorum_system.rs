@@ -1,72 +1,90 @@
-//! Quorum system types for modeling read-write distributed systems.
+//! Read-write quorum systems and strategies.
 //!
-//! A [`QuorumSystem`] pairs a read expression with a write expression
-//! such that every read quorum intersects every write quorum. Given
-//! a quorum system, one can compute resilience, enumerate quorums,
-//! build strategies, and optimize for load/network/latency.
+//! A [`QuorumSystem`] pairs a read expression with a write expression such
+//! that every read quorum intersects every write quorum. A [`Strategy`] is a
+//! probability distribution over read quorums and over write quorums; it
+//! determines per-node load, capacity, network cost, and latency.
 
-use crate::distribution::{self, Canonical, Distribution, OrderedFloat};
+use crate::distribution::{self, Canonical, Distribution};
 use crate::error::{Error, Result};
-use crate::expr::{Element, Expr, Node};
+use crate::expr::{minimize, Element, Expr, Node};
+use good_lp::{
+    default_solver, variable, Expression, ProblemVariables, Solution,
+    SolverModel, Variable,
+};
 use hashbrown::{HashMap, HashSet};
 use itertools::Itertools;
-use rand::seq::SliceRandom;
+use rand::seq::IndexedRandom;
 use std::collections::BTreeMap;
 use std::time::Duration;
-
-/// LP variable maps returned by `create_lp_quorum_variables`.
-type LpVarMaps<T> = (
-    Vec<good_lp::Variable>,
-    Vec<good_lp::Variable>,
-    HashMap<T, Vec<good_lp::Variable>>,
-    HashMap<T, Vec<good_lp::Variable>>,
-);
 
 /// Optimization objective for strategy computation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Objective {
-    /// Minimize the maximum load on any node.
+    /// Minimize the load of the busiest node (maximizes capacity).
     Load,
-    /// Minimize expected quorum size.
+    /// Minimize the expected number of nodes contacted per operation.
     Network,
-    /// Minimize expected quorum latency.
+    /// Minimize the expected operation latency.
     Latency,
 }
 
-/// Optional constraints for strategy optimization.
+/// Optional upper bounds for strategy optimization.
+///
+/// The bound matching the objective being optimized must be `None`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StrategyLimits {
-    /// Maximum load limit.
+    /// Maximum load (see [`Strategy::load`]).
     pub load: Option<f64>,
-    /// Maximum network load limit (expected quorum size).
+    /// Maximum network load (see [`Strategy::network_load`]).
     pub network: Option<f64>,
-    /// Maximum latency limit.
+    /// Maximum latency (see [`Strategy::latency`]).
     pub latency: Option<Duration>,
 }
 
-/// A quorum represented as a sorted vector of elements.
-/// Used as a key in strategy probability maps.
-type Quorum<T> = Vec<T>;
+impl StrategyLimits {
+    /// Reject a limit on the metric being optimized.
+    pub(crate) fn check(&self, objective: Objective) -> Result<()> {
+        let conflict = match objective {
+            Objective::Load => self.load.is_some(),
+            Objective::Network => self.network.is_some(),
+            Objective::Latency => self.latency.is_some(),
+        };
+        if conflict {
+            return Err(Error::InvalidQuorumSystem(format!(
+                "a {objective:?} limit cannot be set when optimizing for \
+                 {objective:?}"
+            )));
+        }
+        Ok(())
+    }
+}
 
-/// Convert a `HashSet` to a sorted Quorum (`Vec`).
-fn to_quorum<T: Element>(set: HashSet<T>) -> Quorum<T> {
-    let mut vec: Vec<T> = set.into_iter().collect();
+type Quorums<T> = Vec<HashSet<T>>;
+
+/// A quorum as a sorted, de-duplicated list of node identifiers.
+pub type Quorum<T> = Vec<T>;
+
+fn to_quorum<T: Element>(set: &HashSet<T>) -> Quorum<T> {
+    let mut vec: Vec<T> = set.iter().cloned().collect();
     vec.sort();
     vec
 }
 
-/// Convert a Quorum (`Vec`) back to a `HashSet`.
-fn from_quorum<T: Element>(quorum: Quorum<T>) -> HashSet<T> {
-    quorum.into_iter().collect()
+fn to_set<T: Element>(quorum: &[T]) -> HashSet<T> {
+    quorum.iter().cloned().collect()
+}
+
+#[expect(clippy::cast_precision_loss)]
+fn len_f64(n: usize) -> f64 {
+    n as f64
 }
 
 /// A read-write quorum system.
 #[derive(Debug, Clone)]
 pub struct QuorumSystem<T: Element> {
-    /// Read quorum expression.
-    pub reads: Expr<T>,
-    /// Write quorum expression.
-    pub writes: Expr<T>,
+    reads: Expr<T>,
+    writes: Expr<T>,
     x_to_node: HashMap<T, Node<T>>,
 }
 
@@ -74,67 +92,76 @@ impl<T: Element> QuorumSystem<T> {
     /// Build a quorum system from reads only; writes are the dual.
     pub fn from_reads(reads: Expr<T>) -> Self {
         let writes = reads.dual();
-        let x_to_node = Self::build_node_map(&reads, &writes);
-        Self { reads, writes, x_to_node }
+        Self::build(reads, writes)
     }
 
     /// Build a quorum system from writes only; reads are the dual.
     pub fn from_writes(writes: Expr<T>) -> Self {
         let reads = writes.dual();
-        let x_to_node = Self::build_node_map(&reads, &writes);
-        Self { reads, writes, x_to_node }
+        Self::build(reads, writes)
     }
 
     /// Build a quorum system from both read and write expressions.
     ///
-    /// Validates that every read quorum intersects every write
-    /// quorum.
-    ///
     /// # Errors
     ///
-    /// Returns an error if read and write quorums don't overlap.
+    /// Returns [`Error::NonOverlappingQuorums`] unless every read quorum
+    /// intersects every write quorum.
     pub fn new(reads: Expr<T>, writes: Expr<T>) -> Result<Self> {
         let optimal_writes = reads.dual();
-        for wq in writes.quorums() {
-            if !optimal_writes.is_quorum(&wq) {
-                return Err(Error::InvalidQuorumSystem(
-                    "not all read quorums intersect all \
-                     write quorums"
-                        .into(),
-                ));
-            }
+        if !writes.quorums().all(|wq| optimal_writes.is_quorum(&wq)) {
+            return Err(Error::NonOverlappingQuorums);
         }
-        let x_to_node = Self::build_node_map(&reads, &writes);
-        Ok(Self { reads, writes, x_to_node })
+        Ok(Self::build(reads, writes))
     }
 
-    /// Return an iterator over all read quorums.
+    fn build(reads: Expr<T>, writes: Expr<T>) -> Self {
+        let mut x_to_node = HashMap::new();
+        for node in reads.nodes().into_iter().chain(writes.nodes()) {
+            x_to_node.entry(node.x().clone()).or_insert(node);
+        }
+        Self { reads, writes, x_to_node }
+    }
+
+    /// The read expression.
+    #[must_use]
+    pub fn reads(&self) -> &Expr<T> {
+        &self.reads
+    }
+
+    /// The write expression.
+    #[must_use]
+    pub fn writes(&self) -> &Expr<T> {
+        &self.writes
+    }
+
+    /// Iterate over all read quorums.
     pub fn read_quorums(&self) -> Box<dyn Iterator<Item = HashSet<T>> + '_> {
         self.reads.quorums()
     }
 
-    /// Return an iterator over all write quorums.
+    /// Iterate over all write quorums.
     pub fn write_quorums(&self) -> Box<dyn Iterator<Item = HashSet<T>> + '_> {
         self.writes.quorums()
     }
 
-    /// Check if a set of elements forms a read quorum.
+    /// Whether `xs` contains a read quorum.
     #[must_use]
     pub fn is_read_quorum(&self, xs: &HashSet<T>) -> bool {
         self.reads.is_quorum(xs)
     }
 
-    /// Check if a set of elements forms a write quorum.
+    /// Whether `xs` contains a write quorum.
     #[must_use]
     pub fn is_write_quorum(&self, xs: &HashSet<T>) -> bool {
         self.writes.is_quorum(xs)
     }
 
-    /// Look up a node by its element identifier.
+    /// Look up a node by its identifier.
     ///
     /// # Errors
     ///
-    /// Returns an error if the element is not found in the quorum system.
+    /// Returns [`Error::InvalidQuorumSystem`] if `x` is not in the system.
     pub fn node(&self, x: &T) -> Result<&Node<T>> {
         self.x_to_node.get(x).ok_or_else(|| {
             Error::InvalidQuorumSystem(format!(
@@ -143,143 +170,113 @@ impl<T: Element> QuorumSystem<T> {
         })
     }
 
-    /// Return the set of all nodes in the system.
+    /// All nodes in the system.
     #[must_use]
     pub fn nodes(&self) -> HashSet<Node<T>> {
-        let mut nodes = self.reads.nodes();
-        nodes.extend(self.writes.nodes());
-        nodes
+        self.x_to_node.values().cloned().collect()
     }
 
-    /// Return the set of all element identifiers in the system.
+    /// All node identifiers in the system.
     #[must_use]
     pub fn elements(&self) -> HashSet<T> {
-        self.nodes().into_iter().map(|n| n.x.clone()).collect()
+        self.x_to_node.keys().cloned().collect()
     }
 
-    /// Return the resilience of the system: the minimum of
-    /// read and write resilience.
+    /// The resilience of the system: the minimum of read and write
+    /// resilience.
     #[must_use]
-    pub fn resilience(&self) -> i64 {
-        std::cmp::min(self.read_resilience(), self.write_resilience())
+    pub fn resilience(&self) -> usize {
+        self.read_resilience().min(self.write_resilience())
     }
 
-    /// Return the resilience of the read expression.
+    /// The resilience of the read expression.
     #[must_use]
-    pub fn read_resilience(&self) -> i64 {
+    pub fn read_resilience(&self) -> usize {
         self.reads.resilience()
     }
 
-    /// Return the resilience of the write expression.
+    /// The resilience of the write expression.
     #[must_use]
-    pub fn write_resilience(&self) -> i64 {
+    pub fn write_resilience(&self) -> usize {
         self.writes.resilience()
     }
 
-    /// Check if both read and write expressions are duplicate-free.
+    /// Whether both read and write expressions are duplicate-free.
     #[must_use]
     pub fn dup_free(&self) -> bool {
         self.reads.dup_free() && self.writes.dup_free()
     }
 
-    /// Build a uniform strategy: equal probability for each
-    /// minimal quorum.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if strategy creation fails.
-    pub fn uniform_strategy(&self, f: usize) -> Result<Strategy<T>> {
-        let (read_quorums, write_quorums) = if f == 0 {
-            (
-                self.read_quorums().collect::<Vec<_>>(),
-                self.write_quorums().collect::<Vec<_>>(),
-            )
-        } else {
-            let xs: Vec<T> = self.elements().into_iter().collect();
-            let rq: Vec<HashSet<T>> =
-                self.f_resilient_quorums(f, &xs, &self.reads);
-            let wq: Vec<HashSet<T>> =
-                self.f_resilient_quorums(f, &xs, &self.writes);
-            if rq.is_empty() {
-                return Err(Error::NoStrategyFound);
-            }
-            if wq.is_empty() {
-                return Err(Error::NoStrategyFound);
-            }
-            (rq, wq)
-        };
-
-        let read_quorums = minimize(read_quorums);
-        let write_quorums = minimize(write_quorums);
-
-        #[allow(clippy::cast_precision_loss)]
-        let rn = read_quorums.len() as f64;
-        #[allow(clippy::cast_precision_loss)]
-        let wn = write_quorums.len() as f64;
-
-        let sigma_r: BTreeMap<Quorum<T>, f64> = read_quorums
-            .into_iter()
-            .map(|q| (to_quorum(q), 1.0 / rn))
-            .collect();
-        let sigma_w: BTreeMap<Quorum<T>, f64> = write_quorums
-            .into_iter()
-            .map(|q| (to_quorum(q), 1.0 / wn))
-            .collect();
-
-        Ok(Strategy::new(self, sigma_r, sigma_w))
+    /// Read and write quorum candidates for `f`-resilient strategies.
+    fn candidate_quorums(&self, f: usize) -> Result<(Quorums<T>, Quorums<T>)> {
+        if f == 0 {
+            return Ok((
+                minimize(self.read_quorums().collect()),
+                minimize(self.write_quorums().collect()),
+            ));
+        }
+        let mut xs: Vec<T> = self.elements().into_iter().collect();
+        xs.sort();
+        let rq = f_resilient_quorums(f, &xs, &self.reads);
+        let wq = f_resilient_quorums(f, &xs, &self.writes);
+        if rq.is_empty() || wq.is_empty() {
+            return Err(Error::NoStrategyFound);
+        }
+        Ok((rq, wq))
     }
 
-    /// Build a strategy from explicit quorum probability maps.
-    /// Weights are normalized to sum to 1.
+    /// A strategy that picks uniformly among the minimal `f`-resilient
+    /// quorums.
     ///
     /// # Errors
     ///
-    /// Returns an error if quorums are invalid or weights are negative.
+    /// Returns [`Error::NoStrategyFound`] if there are no `f`-resilient read
+    /// or write quorums.
+    pub fn uniform_strategy(&self, f: usize) -> Result<Strategy<T>> {
+        let (rq, wq) = self.candidate_quorums(f)?;
+        let uniform = |qs: Vec<HashSet<T>>| -> BTreeMap<Quorum<T>, f64> {
+            let p = 1.0 / len_f64(qs.len());
+            qs.iter().map(|q| (to_quorum(q), p)).collect()
+        };
+        Ok(Strategy::new(self, uniform(rq), uniform(wq)))
+    }
+
+    /// Build a strategy from explicit quorum weights.
+    ///
+    /// Each key is a list of node identifiers (order and duplicates do not
+    /// matter); weights for the same set are added together, and weights
+    /// are normalized to sum to 1. Zero-weight quorums are dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidQuorumSystem`] if a key is not a read (or
+    /// write) quorum, a weight is negative or not finite, or all weights are
+    /// zero.
     pub fn make_strategy(
         &self,
         sigma_r: BTreeMap<Quorum<T>, f64>,
         sigma_w: BTreeMap<Quorum<T>, f64>,
     ) -> Result<Strategy<T>> {
-        if sigma_r.values().any(|&w| w < 0.0) {
-            return Err(Error::InvalidQuorumSystem(
-                "sigma_r has negative weights".into(),
-            ));
-        }
-        if sigma_w.values().any(|&w| w < 0.0) {
-            return Err(Error::InvalidQuorumSystem(
-                "sigma_w has negative weights".into(),
-            ));
-        }
-        for rq in sigma_r.keys() {
-            if !self.is_read_quorum(&from_quorum(rq.clone())) {
-                return Err(Error::InvalidQuorumSystem(
-                    "sigma_r has non-read quorums".into(),
-                ));
-            }
-        }
-        for wq in sigma_w.keys() {
-            if !self.is_write_quorum(&from_quorum(wq.clone())) {
-                return Err(Error::InvalidQuorumSystem(
-                    "sigma_w has non-write quorums".into(),
-                ));
-            }
-        }
-
-        let r_total: f64 = sigma_r.values().sum();
-        let w_total: f64 = sigma_w.values().sum();
-        let normalized_r: BTreeMap<Quorum<T>, f64> =
-            sigma_r.into_iter().map(|(q, w)| (q, w / r_total)).collect();
-        let normalized_w: BTreeMap<Quorum<T>, f64> =
-            sigma_w.into_iter().map(|(q, w)| (q, w / w_total)).collect();
-
-        Ok(Strategy::new(self, normalized_r, normalized_w))
+        let r = normalize("sigma_r", sigma_r, |q| self.is_read_quorum(q))?;
+        let w = normalize("sigma_w", sigma_w, |q| self.is_write_quorum(q))?;
+        Ok(Strategy::new(self, r, w))
     }
 
-    /// Compute the optimal strategy via linear programming.
+    /// Compute the optimal strategy by linear programming.
+    ///
+    /// Minimizes `objective` subject to `limits`, considering only
+    /// `f`-resilient quorums (quorums that still contain a quorum after any
+    /// `f` of their nodes fail). Exactly one of `read_fraction` and
+    /// `write_fraction` must be `Some`.
     ///
     /// # Errors
     ///
-    /// Returns an error if distribution canonicalization or LP solving fails.
+    /// - [`Error::InvalidQuorumSystem`] if the limit matching `objective`
+    ///   is set.
+    /// - [`Error::InvalidDistribution`] for a bad read/write fraction.
+    /// - [`Error::NoStrategyFound`] if the limits cannot be met or there
+    ///   are no `f`-resilient quorums.
+    /// - [`Error::LpError`] if the solver fails for another reason.
     pub fn strategy(
         &self,
         objective: Objective,
@@ -288,275 +285,18 @@ impl<T: Element> QuorumSystem<T> {
         limits: &StrategyLimits,
         f: usize,
     ) -> Result<Strategy<T>> {
-        if objective == Objective::Load && limits.load.is_some() {
-            return Err(Error::InvalidQuorumSystem(
-                "a load limit cannot be set when \
-                 optimizing for load"
-                    .into(),
-            ));
-        }
-        if objective == Objective::Network && limits.network.is_some() {
-            return Err(Error::InvalidQuorumSystem(
-                "a network limit cannot be set when \
-                 optimizing for network"
-                    .into(),
-            ));
-        }
-        if objective == Objective::Latency && limits.latency.is_some() {
-            return Err(Error::InvalidQuorumSystem(
-                "a latency limit cannot be set when \
-                 optimizing for latency"
-                    .into(),
-            ));
-        }
-
+        limits.check(objective)?;
         let d = distribution::canonicalize_rw(read_fraction, write_fraction)?;
-
-        let (read_quorums, write_quorums) = if f == 0 {
-            (
-                self.read_quorums().collect::<Vec<_>>(),
-                self.write_quorums().collect::<Vec<_>>(),
-            )
-        } else {
-            let xs: Vec<T> = self.elements().into_iter().collect();
-            let rq = self.f_resilient_quorums(f, &xs, &self.reads);
-            let wq = self.f_resilient_quorums(f, &xs, &self.writes);
-            if rq.is_empty() || wq.is_empty() {
-                return Err(Error::NoStrategyFound);
-            }
-            (rq, wq)
-        };
-
-        self.lp_optimal_strategy(
-            &read_quorums,
-            &write_quorums,
-            &d,
-            objective,
-            limits,
-        )
+        let (rq, wq) = self.candidate_quorums(f)?;
+        self.lp_optimal_strategy(&rq, &wq, &d, objective, limits)
     }
 
-    /// Compute the latency of a quorum using the earliest point
-    /// at which the quorum condition is met (nodes sorted by
-    /// latency).
-    fn quorum_latency(
-        &self,
-        quorum: &HashSet<T>,
-        is_quorum: &dyn Fn(&HashSet<T>) -> bool,
-    ) -> Duration {
-        let mut nodes: Vec<&Node<T>> =
-            quorum.iter().filter_map(|x| self.x_to_node.get(x)).collect();
-        nodes.sort_by_key(|n| n.latency);
-
-        let mut seen = HashSet::new();
-        for node in nodes {
-            seen.insert(node.x.clone());
-            if is_quorum(&seen) {
-                return node.latency;
-            }
-        }
-        Duration::ZERO
+    /// Latency of a quorum: the time until enough of its nodes (fastest
+    /// first) have responded to form a quorum of `expr`.
+    fn quorum_latency(&self, quorum: &HashSet<T>, expr: &Expr<T>) -> Duration {
+        quorum_latency(&self.x_to_node, quorum, expr)
     }
 
-    fn read_quorum_latency(&self, quorum: &HashSet<T>) -> Duration {
-        self.quorum_latency(quorum, &|xs| self.reads.is_quorum(xs))
-    }
-
-    fn write_quorum_latency(&self, quorum: &HashSet<T>) -> Duration {
-        self.quorum_latency(quorum, &|xs| self.writes.is_quorum(xs))
-    }
-
-    /// Find all f-resilient quorums: quorums that remain valid
-    /// even after removing any f elements.
-    #[allow(clippy::unused_self)]
-    fn f_resilient_quorums(
-        &self,
-        f: usize,
-        xs: &[T],
-        expr: &Expr<T>,
-    ) -> Vec<HashSet<T>> {
-        let mut results = Vec::new();
-        let mut current = HashSet::new();
-        Self::f_resilient_helper(f, xs, expr, &mut current, 0, &mut results);
-        results
-    }
-
-    fn f_resilient_helper(
-        f: usize,
-        xs: &[T],
-        expr: &Expr<T>,
-        current: &mut HashSet<T>,
-        start: usize,
-        results: &mut Vec<HashSet<T>>,
-    ) {
-        let check_size = std::cmp::min(f, current.len());
-        let is_resilient = if check_size == 0 {
-            expr.is_quorum(current)
-        } else {
-            let elems: Vec<T> = current.iter().cloned().collect();
-            elems.iter().combinations(check_size).all(|failure| {
-                let remaining: HashSet<T> = current
-                    .iter()
-                    .filter(|x| !failure.contains(x))
-                    .cloned()
-                    .collect();
-                expr.is_quorum(&remaining)
-            })
-        };
-
-        if is_resilient {
-            results.push(current.clone());
-            return;
-        }
-
-        for j in start..xs.len() {
-            current.insert(xs[j].clone());
-            Self::f_resilient_helper(f, xs, expr, current, j + 1, results);
-            current.remove(&xs[j]);
-        }
-    }
-
-    /// Create LP variables for read/write quorum probabilities and element mappings.
-    fn create_lp_quorum_variables(
-        read_quorums: &[HashSet<T>],
-        write_quorums: &[HashSet<T>],
-        vars: &mut good_lp::ProblemVariables,
-    ) -> LpVarMaps<T> {
-        use good_lp::variable;
-
-        let r_vars: Vec<good_lp::Variable> = (0..read_quorums.len())
-            .map(|_| vars.add(variable().min(0.0).max(1.0)))
-            .collect();
-        let w_vars: Vec<good_lp::Variable> = (0..write_quorums.len())
-            .map(|_| vars.add(variable().min(0.0).max(1.0)))
-            .collect();
-
-        let mut x_to_r_vars: HashMap<T, Vec<good_lp::Variable>> =
-            HashMap::new();
-        for (i, rq) in read_quorums.iter().enumerate() {
-            for x in rq {
-                x_to_r_vars.entry(x.clone()).or_default().push(r_vars[i]);
-            }
-        }
-
-        let mut x_to_w_vars: HashMap<T, Vec<good_lp::Variable>> =
-            HashMap::new();
-        for (i, wq) in write_quorums.iter().enumerate() {
-            for x in wq {
-                x_to_w_vars.entry(x.clone()).or_default().push(w_vars[i]);
-            }
-        }
-
-        (r_vars, w_vars, x_to_r_vars, x_to_w_vars)
-    }
-
-    /// Create load variables for each read fraction in the canonical distribution.
-    fn create_load_info_variables(
-        read_fraction: &Canonical,
-        vars: &mut good_lp::ProblemVariables,
-    ) -> Vec<(OrderedFloat, f64, good_lp::Variable)> {
-        use good_lp::variable;
-
-        read_fraction
-            .iter()
-            .map(|(&fr_key, &p)| {
-                let l = vars.add(variable().min(0.0));
-                (fr_key, p, l)
-            })
-            .collect()
-    }
-
-    /// Add probability sum constraints (read and write probabilities must sum to 1).
-    fn add_probability_sum_constraints<P: good_lp::SolverModel>(
-        mut problem: P,
-        r_vars: &[good_lp::Variable],
-        w_vars: &[good_lp::Variable],
-    ) -> P {
-        use good_lp::Expression;
-
-        let r_sum: Expression = r_vars.iter().copied().sum();
-        problem = problem.with(r_sum.eq(1.0));
-
-        let w_sum: Expression = w_vars.iter().copied().sum();
-        problem = problem.with(w_sum.eq(1.0));
-
-        problem
-    }
-
-    /// Add load constraints for each node at each read fraction.
-    fn add_node_load_constraints<M: good_lp::SolverModel>(
-        &self,
-        mut problem: M,
-        load_info: &[(OrderedFloat, f64, good_lp::Variable)],
-        x_to_r_vars: &HashMap<T, Vec<good_lp::Variable>>,
-        x_to_w_vars: &HashMap<T, Vec<good_lp::Variable>>,
-    ) -> M {
-        use good_lp::Expression;
-
-        let all_nodes: Vec<Node<T>> = self.nodes().into_iter().collect();
-
-        for &(fr_key, _, l) in load_info {
-            let fr = fr_key.0;
-            for node in &all_nodes {
-                let x = &node.x;
-                let mut x_load = Expression::from(0.0);
-
-                if let Some(vs) = x_to_r_vars.get(x) {
-                    let rsum: Expression = vs.iter().copied().sum();
-                    x_load += rsum * (fr / node.read_capacity);
-                }
-
-                if let Some(vs) = x_to_w_vars.get(x) {
-                    let wsum: Expression = vs.iter().copied().sum();
-                    x_load += wsum * ((1.0 - fr) / node.write_capacity);
-                }
-
-                problem = problem.with(x_load.leq(l));
-            }
-        }
-
-        problem
-    }
-
-    /// Extract strategy from LP solution by filtering non-zero quorum probabilities.
-    fn extract_strategy_from_solution<S: good_lp::Solution>(
-        &self,
-        solution: &S,
-        read_quorums: &[HashSet<T>],
-        write_quorums: &[HashSet<T>],
-        r_vars: &[good_lp::Variable],
-        w_vars: &[good_lp::Variable],
-    ) -> Strategy<T> {
-        let sigma_r: BTreeMap<Quorum<T>, f64> = read_quorums
-            .iter()
-            .zip(r_vars.iter())
-            .filter_map(|(rq, &v)| {
-                let val = solution.value(v);
-                if val > 1e-10 {
-                    Some((to_quorum(rq.clone()), val))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let sigma_w: BTreeMap<Quorum<T>, f64> = write_quorums
-            .iter()
-            .zip(w_vars.iter())
-            .filter_map(|(wq, &v)| {
-                let val = solution.value(v);
-                if val > 1e-10 {
-                    Some((to_quorum(wq.clone()), val))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        Strategy::new(self, sigma_r, sigma_w)
-    }
-
-    /// Solve the LP to find an optimal strategy.
     fn lp_optimal_strategy(
         &self,
         read_quorums: &[HashSet<T>],
@@ -565,141 +305,198 @@ impl<T: Element> QuorumSystem<T> {
         objective: Objective,
         limits: &StrategyLimits,
     ) -> Result<Strategy<T>> {
-        use good_lp::{
-            default_solver, Expression, ProblemVariables, SolverModel, Variable,
-        };
-
         let mut vars = ProblemVariables::new();
+        let r: Vec<Variable> = read_quorums
+            .iter()
+            .map(|_| vars.add(variable().min(0.0).max(1.0)))
+            .collect();
+        let w: Vec<Variable> = write_quorums
+            .iter()
+            .map(|_| vars.add(variable().min(0.0).max(1.0)))
+            .collect();
+        // One load variable per read fraction: the max node load at that fr.
+        let loads: Vec<(f64, f64, Variable)> = read_fraction
+            .iter()
+            .map(|(fr, &p)| (fr.0, p, vars.add(variable().min(0.0))))
+            .collect();
 
-        // Create LP variables for quorum probabilities and element mappings.
-        let (r_vars, w_vars, x_to_r_vars, x_to_w_vars) =
-            Self::create_lp_quorum_variables(
-                read_quorums,
-                write_quorums,
-                &mut vars,
-            );
-
-        // Create load variables for each read fraction.
-        let load_info =
-            Self::create_load_info_variables(read_fraction, &mut vars);
-
-        // Calculate weighted average read fraction for network/latency expressions.
         let avg_fr: f64 = read_fraction.iter().map(|(k, &p)| k.0 * p).sum();
-
-        // Build network load expression.
-        let network_expr = |r: &[Variable], w: &[Variable]| -> Expression {
-            let read_part: Expression = read_quorums
-                .iter()
-                .zip(r.iter())
-                .map(|(rq, &v)| {
-                    #[allow(clippy::cast_precision_loss)]
-                    {
-                        Expression::from(v) * rq.len() as f64
-                    }
-                })
-                .sum();
-            let write_part: Expression = write_quorums
-                .iter()
-                .zip(w.iter())
-                .map(|(wq, &v)| {
-                    #[allow(clippy::cast_precision_loss)]
-                    {
-                        Expression::from(v) * wq.len() as f64
-                    }
-                })
-                .sum();
-            avg_fr * read_part + (1.0 - avg_fr) * write_part
+        let weighted = |coeffs: &[f64], vs: &[Variable]| -> Expression {
+            coeffs.iter().zip(vs).map(|(&c, &v)| c * v).sum()
         };
-
-        // Build latency expression.
-        let latency_expr = |r: &[Variable], w: &[Variable]| -> Expression {
-            let read_part: Expression = read_quorums
+        let rq_sizes: Vec<f64> =
+            read_quorums.iter().map(|q| len_f64(q.len())).collect();
+        let wq_sizes: Vec<f64> =
+            write_quorums.iter().map(|q| len_f64(q.len())).collect();
+        let network = avg_fr * weighted(&rq_sizes, &r)
+            + (1.0 - avg_fr) * weighted(&wq_sizes, &w);
+        let latency = {
+            let rl: Vec<f64> = read_quorums
                 .iter()
-                .zip(r.iter())
-                .map(|(rq, &v)| {
-                    let lat = self.read_quorum_latency(rq).as_secs_f64();
-                    Expression::from(v) * lat
-                })
-                .sum();
-            let write_part: Expression = write_quorums
+                .map(|q| self.quorum_latency(q, &self.reads).as_secs_f64())
+                .collect();
+            let wl: Vec<f64> = write_quorums
                 .iter()
-                .zip(w.iter())
-                .map(|(wq, &v)| {
-                    let lat = self.write_quorum_latency(wq).as_secs_f64();
-                    Expression::from(v) * lat
-                })
-                .sum();
-            avg_fr * read_part + (1.0 - avg_fr) * write_part
+                .map(|q| self.quorum_latency(q, &self.writes).as_secs_f64())
+                .collect();
+            avg_fr * weighted(&rl, &r) + (1.0 - avg_fr) * weighted(&wl, &w)
         };
+        let load: Expression = loads.iter().map(|&(_, p, l)| p * l).sum();
 
-        // Build objective expression.
-        let obj: Expression = match objective {
-            Objective::Load => {
-                load_info.iter().map(|&(_, p, l)| Expression::from(l) * p).sum()
+        let objective_expr = match objective {
+            Objective::Load => load.clone(),
+            Objective::Network => network.clone(),
+            Objective::Latency => latency.clone(),
+        };
+        let mut problem = vars.minimise(objective_expr).using(default_solver);
+        let r_sum: Expression = r.iter().copied().sum();
+        let w_sum: Expression = w.iter().copied().sum();
+        problem = problem.with(r_sum.eq(1.0)).with(w_sum.eq(1.0));
+
+        // Per-node load at each read fraction is at most that fraction's
+        // load variable.
+        let mut x_to_r: HashMap<&T, Vec<Variable>> = HashMap::new();
+        for (q, &v) in read_quorums.iter().zip(&r) {
+            for x in q {
+                x_to_r.entry(x).or_default().push(v);
             }
-            Objective::Network => network_expr(&r_vars, &w_vars),
-            Objective::Latency => latency_expr(&r_vars, &w_vars),
+        }
+        let mut x_to_w: HashMap<&T, Vec<Variable>> = HashMap::new();
+        for (q, &v) in write_quorums.iter().zip(&w) {
+            for x in q {
+                x_to_w.entry(x).or_default().push(v);
+            }
+        }
+        for &(fr, _, l) in &loads {
+            for node in self.x_to_node.values() {
+                let sum = |m: &HashMap<&T, Vec<Variable>>| -> Expression {
+                    m.get(node.x()).into_iter().flatten().copied().sum()
+                };
+                let node_load = (fr / node.read_capacity()) * sum(&x_to_r)
+                    + ((1.0 - fr) / node.write_capacity()) * sum(&x_to_w);
+                problem = problem.with(node_load.leq(l));
+            }
+        }
+
+        if let Some(limit) = limits.load {
+            problem = problem.with(load.leq(limit));
+        }
+        if let Some(limit) = limits.network {
+            problem = problem.with(network.leq(limit));
+        }
+        if let Some(limit) = limits.latency {
+            problem = problem.with(latency.leq(limit.as_secs_f64()));
+        }
+
+        let solution = problem.solve()?;
+        let pick = |qs: &[HashSet<T>], vs: &[Variable]| {
+            qs.iter()
+                .zip(vs)
+                .map(|(q, &v)| (to_quorum(q), solution.value(v)))
+                .filter(|&(_, p)| p > 1e-10)
+                .collect::<BTreeMap<_, _>>()
         };
+        let sigma_r = pick(read_quorums, &r);
+        let sigma_w = pick(write_quorums, &w);
+        // LP solutions satisfy sum == 1 only up to solver tolerance.
+        let renorm = |m: BTreeMap<Quorum<T>, f64>| {
+            let total: f64 = m.values().sum();
+            m.into_iter().map(|(q, p)| (q, p / total)).collect()
+        };
+        Ok(Strategy::new(self, renorm(sigma_r), renorm(sigma_w)))
+    }
+}
 
-        // Create LP problem with objective.
-        let mut problem = vars.minimise(obj).using(default_solver);
+/// Validate, merge, and normalize user-supplied quorum weights.
+fn normalize<T: Element>(
+    name: &str,
+    sigma: BTreeMap<Quorum<T>, f64>,
+    is_quorum: impl Fn(&HashSet<T>) -> bool,
+) -> Result<BTreeMap<Quorum<T>, f64>> {
+    let invalid =
+        |msg: &str| Error::InvalidQuorumSystem(format!("{name} {msg}"));
+    let mut merged: BTreeMap<Quorum<T>, f64> = BTreeMap::new();
+    for (q, weight) in sigma {
+        if !weight.is_finite() || weight < 0.0 {
+            return Err(invalid("has negative or non-finite weights"));
+        }
+        let set = to_set(&q);
+        if !is_quorum(&set) {
+            return Err(invalid(&format!(
+                "has non-quorum {:?}",
+                to_quorum(&set)
+            )));
+        }
+        *merged.entry(to_quorum(&set)).or_default() += weight;
+    }
+    let total: f64 = merged.values().sum();
+    if !(total.is_finite() && total > 0.0) {
+        return Err(invalid("must have a positive total weight"));
+    }
+    Ok(merged
+        .into_iter()
+        .filter(|&(_, w)| w > 0.0)
+        .map(|(q, w)| (q, w / total))
+        .collect())
+}
 
-        // Add probability sum constraints.
-        problem =
-            Self::add_probability_sum_constraints(problem, &r_vars, &w_vars);
+/// All minimal sets over `xs` that remain quorums of `expr` after any `f`
+/// of their elements fail.
+fn f_resilient_quorums<T: Element>(
+    f: usize,
+    xs: &[T],
+    expr: &Expr<T>,
+) -> Vec<HashSet<T>> {
+    let mut results = Vec::new();
+    f_resilient_helper(f, xs, expr, &mut HashSet::new(), 0, &mut results);
+    minimize(results)
+}
 
-        // Add load constraints for each node.
-        problem = self.add_node_load_constraints(
-            problem,
-            &load_info,
-            &x_to_r_vars,
-            &x_to_w_vars,
-        );
-
-        // Add optional limit constraints.
-        if let Some(ll) = limits.load {
-            let load_expr: Expression = load_info
+fn f_resilient_helper<T: Element>(
+    f: usize,
+    xs: &[T],
+    expr: &Expr<T>,
+    current: &mut HashSet<T>,
+    start: usize,
+    results: &mut Vec<HashSet<T>>,
+) {
+    let resilient =
+        current.iter().combinations(f.min(current.len())).all(|failed| {
+            let alive: HashSet<T> = current
                 .iter()
-                .map(|&(_, p, l)| Expression::from(l) * p)
-                .sum();
-            problem = problem.with(load_expr.leq(ll));
-        }
-        if let Some(nl) = limits.network {
-            let ne = network_expr(&r_vars, &w_vars);
-            problem = problem.with(ne.leq(nl));
-        }
-        if let Some(ll) = limits.latency {
-            let le = latency_expr(&r_vars, &w_vars);
-            problem = problem.with(le.leq(ll.as_secs_f64()));
-        }
-
-        // Solve the LP problem.
-        let solution =
-            problem.solve().map_err(|e| Error::LpError(format!("{e}")))?;
-
-        // Extract strategy from solution.
-        Ok(self.extract_strategy_from_solution(
-            &solution,
-            read_quorums,
-            write_quorums,
-            &r_vars,
-            &w_vars,
-        ))
+                .filter(|x| !failed.contains(x))
+                .cloned()
+                .collect();
+            expr.is_quorum(&alive)
+        });
+    if resilient {
+        results.push(current.clone());
+        return;
     }
-
-    fn build_node_map(
-        reads: &Expr<T>,
-        writes: &Expr<T>,
-    ) -> HashMap<T, Node<T>> {
-        let mut map = HashMap::new();
-        for node in reads.nodes() {
-            map.insert(node.x.clone(), node);
-        }
-        for node in writes.nodes() {
-            map.entry(node.x.clone()).or_insert(node);
-        }
-        map
+    for j in start..xs.len() {
+        current.insert(xs[j].clone());
+        f_resilient_helper(f, xs, expr, current, j + 1, results);
+        current.remove(&xs[j]);
     }
+}
+
+fn quorum_latency<T: Element>(
+    x_to_node: &HashMap<T, Node<T>>,
+    quorum: &HashSet<T>,
+    expr: &Expr<T>,
+) -> Duration {
+    let mut nodes: Vec<&Node<T>> =
+        quorum.iter().filter_map(|x| x_to_node.get(x)).collect();
+    nodes.sort_by_key(|n| n.latency());
+    let mut seen = HashSet::new();
+    for node in nodes {
+        seen.insert(node.x().clone());
+        if expr.is_quorum(&seen) {
+            return node.latency();
+        }
+    }
+    // Unreachable for quorums of `expr`; strategies only contain quorums.
+    Duration::ZERO
 }
 
 impl<T: Element> std::fmt::Display for QuorumSystem<T> {
@@ -708,76 +505,86 @@ impl<T: Element> std::fmt::Display for QuorumSystem<T> {
     }
 }
 
-/// A strategy assigns probabilities to read and write quorums.
+/// A probability distribution over read quorums and over write quorums.
+///
+/// Built by [`QuorumSystem::strategy`], [`QuorumSystem::uniform_strategy`],
+/// or [`QuorumSystem::make_strategy`]; probabilities always sum to 1.
 #[derive(Debug, Clone)]
 pub struct Strategy<T: Element> {
-    /// Read quorum probabilities.
-    pub sigma_r: BTreeMap<Quorum<T>, f64>,
-    /// Write quorum probabilities.
-    pub sigma_w: BTreeMap<Quorum<T>, f64>,
-    /// Per-element read probability: P(x in chosen read quorum).
-    x_read_prob: HashMap<T, f64>,
-    /// Per-element write probability: P(x in chosen write quorum).
-    x_write_prob: HashMap<T, f64>,
-    /// Cached node map from the quorum system.
-    x_to_node: HashMap<T, Node<T>>,
-    /// All nodes in the quorum system.
-    all_nodes: HashSet<Node<T>>,
-    /// Read expression (for latency computation).
-    reads: Expr<T>,
-    /// Write expression (for latency computation).
-    writes: Expr<T>,
+    sigma_r: BTreeMap<Quorum<T>, f64>,
+    sigma_w: BTreeMap<Quorum<T>, f64>,
+    /// Per-node: (node, P(node in read quorum), P(node in write quorum)).
+    node_probs: Vec<(Node<T>, f64, f64)>,
+    qs: QuorumSystem<T>,
 }
 
 impl<T: Element> Strategy<T> {
-    /// Build a strategy from a quorum system and quorum
-    /// probability maps.
     fn new(
         qs: &QuorumSystem<T>,
         sigma_r: BTreeMap<Quorum<T>, f64>,
         sigma_w: BTreeMap<Quorum<T>, f64>,
     ) -> Self {
-        let mut x_read_prob: HashMap<T, f64> = HashMap::new();
-        for (rq, &p) in &sigma_r {
-            for x in rq {
-                *x_read_prob.entry(x.clone()).or_default() += p;
+        let mut x_read: HashMap<T, f64> = HashMap::new();
+        for (q, &p) in &sigma_r {
+            for x in q {
+                *x_read.entry_ref(x).or_default() += p;
             }
         }
-
-        let mut x_write_prob: HashMap<T, f64> = HashMap::new();
-        for (wq, &p) in &sigma_w {
-            for x in wq {
-                *x_write_prob.entry(x.clone()).or_default() += p;
+        let mut x_write: HashMap<T, f64> = HashMap::new();
+        for (q, &p) in &sigma_w {
+            for x in q {
+                *x_write.entry_ref(x).or_default() += p;
             }
         }
-
-        Self {
-            sigma_r,
-            sigma_w,
-            x_read_prob,
-            x_write_prob,
-            x_to_node: qs.x_to_node.clone(),
-            all_nodes: qs.nodes(),
-            reads: qs.reads.clone(),
-            writes: qs.writes.clone(),
-        }
+        let mut node_probs: Vec<(Node<T>, f64, f64)> = qs
+            .x_to_node
+            .values()
+            .map(|n| {
+                let rp = x_read.get(n.x()).copied().unwrap_or(0.0);
+                let wp = x_write.get(n.x()).copied().unwrap_or(0.0);
+                (n.clone(), rp, wp)
+            })
+            .collect();
+        node_probs.sort_by(|a, b| a.0.cmp(&b.0));
+        Self { sigma_r, sigma_w, node_probs, qs: qs.clone() }
     }
 
-    /// Sample a random read quorum according to probabilities.
+    /// The quorum system this strategy is for.
+    #[must_use]
+    pub fn quorum_system(&self) -> &QuorumSystem<T> {
+        &self.qs
+    }
+
+    /// Read quorum probabilities (they sum to 1).
+    #[must_use]
+    pub fn sigma_r(&self) -> &BTreeMap<Quorum<T>, f64> {
+        &self.sigma_r
+    }
+
+    /// Write quorum probabilities (they sum to 1).
+    #[must_use]
+    pub fn sigma_w(&self) -> &BTreeMap<Quorum<T>, f64> {
+        &self.sigma_w
+    }
+
+    /// Sample a read quorum according to the strategy.
+    #[must_use]
     pub fn get_read_quorum(&self) -> HashSet<T> {
         sample_quorum(&self.sigma_r)
     }
 
-    /// Sample a random write quorum according to probabilities.
+    /// Sample a write quorum according to the strategy.
+    #[must_use]
     pub fn get_write_quorum(&self) -> HashSet<T> {
         sample_quorum(&self.sigma_w)
     }
 
-    /// Compute the load for a given distribution.
+    /// Expected load of the busiest node, in fractions of its capacity
+    /// per operation. Capacity is `1 / load`.
     ///
     /// # Errors
     ///
-    /// Returns an error if distribution canonicalization fails.
+    /// Returns an error if the distribution is invalid.
     pub fn load(
         &self,
         read_fraction: Option<&Distribution>,
@@ -787,11 +594,12 @@ impl<T: Element> Strategy<T> {
         Ok(d.iter().map(|(fr, &p)| p * self.load_at(fr.0)).sum())
     }
 
-    /// Compute capacity (inverse load) for a distribution.
+    /// Expected capacity: operations per unit time the system can serve
+    /// before its busiest node saturates (`1 / load` at each fraction).
     ///
     /// # Errors
     ///
-    /// Returns an error if distribution canonicalization fails.
+    /// Returns an error if the distribution is invalid.
     pub fn capacity(
         &self,
         read_fraction: Option<&Distribution>,
@@ -801,84 +609,65 @@ impl<T: Element> Strategy<T> {
         Ok(d.iter().map(|(fr, &p)| p / self.load_at(fr.0)).sum())
     }
 
-    /// Compute the expected network load (quorum size).
+    /// Expected number of nodes contacted per operation.
     ///
     /// # Errors
     ///
-    /// Returns an error if distribution canonicalization fails.
+    /// Returns an error if the distribution is invalid.
     pub fn network_load(
         &self,
         read_fraction: Option<&Distribution>,
         write_fraction: Option<&Distribution>,
     ) -> Result<f64> {
-        let d = distribution::canonicalize_rw(read_fraction, write_fraction)?;
-        let fr: f64 = d.iter().map(|(k, &p)| k.0 * p).sum();
-        let reads: f64 = self
-            .sigma_r
-            .iter()
-            .map(|(rq, &p)| {
-                #[allow(clippy::cast_precision_loss)]
-                {
-                    p * rq.len() as f64
-                }
-            })
-            .sum();
-        let writes: f64 = self
-            .sigma_w
-            .iter()
-            .map(|(wq, &p)| {
-                #[allow(clippy::cast_precision_loss)]
-                {
-                    p * wq.len() as f64
-                }
-            })
-            .sum();
-        Ok(fr * reads + (1.0 - fr) * writes)
+        let fr = avg_read_fraction(read_fraction, write_fraction)?;
+        let expected_size = |sigma: &BTreeMap<Quorum<T>, f64>| -> f64 {
+            sigma.iter().map(|(q, &p)| p * len_f64(q.len())).sum()
+        };
+        Ok(fr * expected_size(&self.sigma_r)
+            + (1.0 - fr) * expected_size(&self.sigma_w))
     }
 
-    /// Compute the expected latency.
+    /// Expected operation latency: for each quorum, the time until its
+    /// fastest nodes form a quorum, weighted by the strategy.
     ///
     /// # Errors
     ///
-    /// Returns an error if distribution canonicalization fails.
+    /// Returns an error if the distribution is invalid.
     pub fn latency(
         &self,
         read_fraction: Option<&Distribution>,
         write_fraction: Option<&Distribution>,
     ) -> Result<Duration> {
-        let d = distribution::canonicalize_rw(read_fraction, write_fraction)?;
-        let fr: f64 = d.iter().map(|(k, &p)| k.0 * p).sum();
-
-        let read_lat: f64 = self
-            .sigma_r
-            .iter()
-            .map(|(rq, &p)| {
-                let lat = self
-                    .quorum_latency(&from_quorum(rq.clone()), true)
-                    .as_secs_f64();
-                p * lat
-            })
-            .sum();
-        let write_lat: f64 = self
-            .sigma_w
-            .iter()
-            .map(|(wq, &p)| {
-                let lat = self
-                    .quorum_latency(&from_quorum(wq.clone()), false)
-                    .as_secs_f64();
-                p * lat
-            })
-            .sum();
-
-        let total = fr * read_lat + (1.0 - fr) * write_lat;
-        Ok(Duration::from_secs_f64(total))
+        let fr = avg_read_fraction(read_fraction, write_fraction)?;
+        let expected = |sigma: &BTreeMap<Quorum<T>, f64>, e: &Expr<T>| -> f64 {
+            sigma
+                .iter()
+                .map(|(q, &p)| {
+                    p * self.qs.quorum_latency(&to_set(q), e).as_secs_f64()
+                })
+                .sum()
+        };
+        let secs = fr * expected(&self.sigma_r, &self.qs.reads)
+            + (1.0 - fr) * expected(&self.sigma_w, &self.qs.writes);
+        Ok(Duration::from_secs_f64(secs))
     }
 
-    /// Compute the load on a specific node for a distribution.
+    fn probs(&self, node: &Node<T>) -> (f64, f64) {
+        self.node_probs
+            .binary_search_by(|(n, _, _)| n.cmp(node))
+            .map_or((0.0, 0.0), |i| {
+                (self.node_probs[i].1, self.node_probs[i].2)
+            })
+    }
+
+    /// Expected load on `node`.
+    ///
+    /// Capacities come from the quorum system's copy of the node, so
+    /// passing `Node::new(id)` works. Nodes not in the system have load 0.
     ///
     /// # Errors
     ///
-    /// Returns an error if distribution canonicalization fails.
+    /// Returns an error if the distribution is invalid.
     pub fn node_load(
         &self,
         node: &Node<T>,
@@ -886,14 +675,15 @@ impl<T: Element> Strategy<T> {
         write_fraction: Option<&Distribution>,
     ) -> Result<f64> {
         let d = distribution::canonicalize_rw(read_fraction, write_fraction)?;
+        let node = self.qs.x_to_node.get(node.x()).unwrap_or(node);
         Ok(d.iter().map(|(fr, &p)| p * self.node_load_at(node, fr.0)).sum())
     }
 
-    /// Compute the utilization of a node for a distribution.
+    /// Utilization of `node`: its load relative to the busiest node.
     ///
     /// # Errors
     ///
-    /// Returns an error if distribution canonicalization fails.
+    /// Returns an error if the distribution is invalid.
     pub fn node_utilization(
         &self,
         node: &Node<T>,
@@ -901,20 +691,20 @@ impl<T: Element> Strategy<T> {
         write_fraction: Option<&Distribution>,
     ) -> Result<f64> {
         let d = distribution::canonicalize_rw(read_fraction, write_fraction)?;
+        let node = self.qs.x_to_node.get(node.x()).unwrap_or(node);
         Ok(d.iter()
             .map(|(fr, &p)| {
-                let nl = self.node_load_at(node, fr.0);
-                let l = self.load_at(fr.0);
-                p * nl / l
+                p * self.node_load_at(node, fr.0) / self.load_at(fr.0)
             })
             .sum())
     }
 
-    /// Compute the throughput for a node under a distribution.
+    /// Requests per unit time handled by `node` when the system runs at
+    /// full capacity.
     ///
     /// # Errors
     ///
-    /// Returns an error if distribution canonicalization fails.
+    /// Returns an error if the distribution is invalid.
     pub fn node_throughput(
         &self,
         node: &Node<T>,
@@ -922,121 +712,71 @@ impl<T: Element> Strategy<T> {
         write_fraction: Option<&Distribution>,
     ) -> Result<f64> {
         let d = distribution::canonicalize_rw(read_fraction, write_fraction)?;
+        let (rp, wp) = self.probs(node);
         Ok(d.iter()
             .map(|(fr, &p)| {
                 let cap = 1.0 / self.load_at(fr.0);
-                let fw = 1.0 - fr.0;
-                let rp = self.x_read_prob.get(&node.x).copied().unwrap_or(0.0);
-                let wp = self.x_write_prob.get(&node.x).copied().unwrap_or(0.0);
-                p * cap * (fr.0 * rp + fw * wp)
+                p * cap * (fr.0 * rp + (1.0 - fr.0) * wp)
             })
             .sum())
     }
 
-    /// Compute the load at a fixed read fraction.
     fn load_at(&self, fr: f64) -> f64 {
-        self.all_nodes
+        self.node_probs
             .iter()
-            .map(|n| self.node_load_at(n, fr))
+            .map(|(n, rp, wp)| node_load(n, *rp, *wp, fr))
             .fold(0.0_f64, f64::max)
     }
 
-    /// Compute the load on a specific node at a fixed fr.
     fn node_load_at(&self, node: &Node<T>, fr: f64) -> f64 {
-        let fw = 1.0 - fr;
-        let rp = self.x_read_prob.get(&node.x).copied().unwrap_or(0.0);
-        let wp = self.x_write_prob.get(&node.x).copied().unwrap_or(0.0);
-        fr * rp / node.read_capacity + fw * wp / node.write_capacity
+        let (rp, wp) = self.probs(node);
+        node_load(node, rp, wp, fr)
     }
+}
 
-    /// Compute the latency for a quorum.
-    fn quorum_latency(&self, quorum: &HashSet<T>, is_read: bool) -> Duration {
-        let mut nodes: Vec<&Node<T>> =
-            quorum.iter().filter_map(|x| self.x_to_node.get(x)).collect();
-        nodes.sort_by_key(|n| n.latency);
+fn node_load<T: Element>(node: &Node<T>, rp: f64, wp: f64, fr: f64) -> f64 {
+    fr * rp / node.read_capacity() + (1.0 - fr) * wp / node.write_capacity()
+}
 
-        let mut seen = HashSet::new();
-        for node in nodes {
-            seen.insert(node.x.clone());
-            let satisfied = if is_read {
-                self.reads.is_quorum(&seen)
-            } else {
-                self.writes.is_quorum(&seen)
-            };
-            if satisfied {
-                return node.latency;
-            }
-        }
-        Duration::ZERO
-    }
+fn avg_read_fraction(
+    read_fraction: Option<&Distribution>,
+    write_fraction: Option<&Distribution>,
+) -> Result<f64> {
+    let d = distribution::canonicalize_rw(read_fraction, write_fraction)?;
+    Ok(d.iter().map(|(k, &p)| k.0 * p).sum())
 }
 
 impl<T: Element> std::fmt::Display for Strategy<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let reads: Vec<String> = self
-            .sigma_r
-            .iter()
-            .map(|(q, p)| {
-                let mut elems: Vec<String> =
-                    q.iter().map(ToString::to_string).collect();
-                elems.sort();
-                format!("{{{}}}: {p:.4}", elems.join(", "))
-            })
-            .collect();
-        let writes: Vec<String> = self
-            .sigma_w
-            .iter()
-            .map(|(q, p)| {
-                let mut elems: Vec<String> =
-                    q.iter().map(ToString::to_string).collect();
-                elems.sort();
-                format!("{{{}}}: {p:.4}", elems.join(", "))
-            })
-            .collect();
+        let show = |sigma: &BTreeMap<Quorum<T>, f64>| -> String {
+            sigma
+                .iter()
+                .map(|(q, p)| format!("{{{}}}: {p:.4}", q.iter().join(", ")))
+                .join(", ")
+        };
         write!(
             f,
             "Strategy(reads=[{}], writes=[{}])",
-            reads.join(", "),
-            writes.join(", ")
+            show(&self.sigma_r),
+            show(&self.sigma_w)
         )
     }
 }
 
-/// Remove non-minimal sets: keep only sets that are not
-/// supersets of any other set in the collection.
-fn minimize<T: Element>(mut sets: Vec<HashSet<T>>) -> Vec<HashSet<T>> {
-    sets.sort_by_key(HashSet::len);
-    let mut minimal: Vec<HashSet<T>> = Vec::new();
-    for s in sets {
-        if !minimal.iter().any(|m| s.is_superset(m)) {
-            minimal.push(s);
-        }
-    }
-    minimal
-}
-
-/// Sample a quorum from a probability distribution.
+/// Sample a quorum. Strategies are never empty and weights are positive,
+/// so this always returns a quorum.
 fn sample_quorum<T: Element>(sigma: &BTreeMap<Quorum<T>, f64>) -> HashSet<T> {
     let entries: Vec<(&Quorum<T>, &f64)> = sigma.iter().collect();
-    let mut rng = rand::thread_rng();
-    let chosen = entries
-        .choose_weighted(&mut rng, |(_q, &w)| w)
-        .map(|(q, _)| from_quorum((*q).clone()))
-        .unwrap_or_default();
-    chosen
+    entries
+        .choose_weighted(&mut rand::rng(), |(_, &w)| w)
+        .map(|(q, _)| to_set(q))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::float_cmp,
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::used_underscore_binding
-)]
+#[expect(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::expr::Node;
-    use hashbrown::HashSet;
 
     fn n(x: &str) -> Expr<String> {
         Expr::Node(Node::new(x.to_string()))
@@ -1049,6 +789,7 @@ mod tests {
     fn node_with(x: &str, rc: f64, wc: f64, lat: u64) -> Node<String> {
         Node::new(x.to_string())
             .with_read_write_capacity(rc, wc)
+            .expect("valid capacity")
             .with_latency(Duration::from_secs(lat))
     }
 
@@ -1104,8 +845,8 @@ mod tests {
 
     #[test]
     fn new_with_no_overlap_fails() {
-        let qs = QuorumSystem::new(n("a") + n("b"), n("a").clone());
-        assert!(qs.is_err());
+        let qs = QuorumSystem::new(n("a") + n("b"), n("a"));
+        assert_eq!(qs.unwrap_err(), Error::NonOverlappingQuorums);
     }
 
     // -- Basic methods --
@@ -1155,24 +896,24 @@ mod tests {
 
     #[test]
     fn uniform_strategy_single_node() {
-        let qs = QuorumSystem::from_reads(n("a").clone());
+        let qs = QuorumSystem::from_reads(n("a"));
         let sigma = qs.uniform_strategy(0).expect("ok");
-        assert_eq!(sigma.sigma_r.len(), 1);
-        assert!((sigma.sigma_r[&quorum(&["a"])] - 1.0).abs() < f64::EPSILON);
-        assert_eq!(sigma.sigma_w.len(), 1);
-        assert!((sigma.sigma_w[&quorum(&["a"])] - 1.0).abs() < f64::EPSILON);
+        assert_eq!(sigma.sigma_r().len(), 1);
+        assert!((sigma.sigma_r()[&quorum(&["a"])] - 1.0).abs() < f64::EPSILON);
+        assert_eq!(sigma.sigma_w().len(), 1);
+        assert!((sigma.sigma_w()[&quorum(&["a"])] - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn uniform_strategy_two_nodes() {
         let qs = QuorumSystem::from_reads(n("a") + n("b"));
         let sigma = qs.uniform_strategy(0).expect("ok");
-        assert_eq!(sigma.sigma_r.len(), 2);
-        assert!((sigma.sigma_r[&quorum(&["a"])] - 0.5).abs() < 1e-10);
-        assert!((sigma.sigma_r[&quorum(&["b"])] - 0.5).abs() < 1e-10);
-        assert_eq!(sigma.sigma_w.len(), 1);
+        assert_eq!(sigma.sigma_r().len(), 2);
+        assert!((sigma.sigma_r()[&quorum(&["a"])] - 0.5).abs() < 1e-10);
+        assert!((sigma.sigma_r()[&quorum(&["b"])] - 0.5).abs() < 1e-10);
+        assert_eq!(sigma.sigma_w().len(), 1);
         assert!(
-            (sigma.sigma_w[&quorum(&["a", "b"])] - 1.0).abs() < f64::EPSILON
+            (sigma.sigma_w()[&quorum(&["a", "b"])] - 1.0).abs() < f64::EPSILON
         );
     }
 
@@ -1180,17 +921,17 @@ mod tests {
     fn uniform_strategy_grid() {
         let qs = QuorumSystem::from_reads(n("a") * n("b") + n("c") * n("d"));
         let sigma = qs.uniform_strategy(0).expect("ok");
-        assert_eq!(sigma.sigma_r.len(), 2);
-        assert!((sigma.sigma_r[&quorum(&["a", "b"])] - 0.5).abs() < 1e-10);
-        assert!((sigma.sigma_r[&quorum(&["c", "d"])] - 0.5).abs() < 1e-10);
-        assert_eq!(sigma.sigma_w.len(), 4);
+        assert_eq!(sigma.sigma_r().len(), 2);
+        assert!((sigma.sigma_r()[&quorum(&["a", "b"])] - 0.5).abs() < 1e-10);
+        assert!((sigma.sigma_r()[&quorum(&["c", "d"])] - 0.5).abs() < 1e-10);
+        assert_eq!(sigma.sigma_w().len(), 4);
         for wq in &[
             quorum(&["a", "c"]),
             quorum(&["a", "d"]),
             quorum(&["b", "c"]),
             quorum(&["b", "d"]),
         ] {
-            assert!((sigma.sigma_w[wq] - 0.25).abs() < 1e-10);
+            assert!((sigma.sigma_w()[wq] - 0.25).abs() < 1e-10);
         }
     }
 
@@ -1199,8 +940,8 @@ mod tests {
         // a + a*b should reduce to just {a}
         let qs = QuorumSystem::from_reads(n("a") + n("a") * n("b"));
         let sigma = qs.uniform_strategy(0).expect("ok");
-        assert_eq!(sigma.sigma_r.len(), 1);
-        assert!((sigma.sigma_r[&quorum(&["a"])] - 1.0).abs() < f64::EPSILON);
+        assert_eq!(sigma.sigma_r().len(), 1);
+        assert!((sigma.sigma_r()[&quorum(&["a"])] - 1.0).abs() < f64::EPSILON);
     }
 
     // -- make_strategy --
@@ -1218,15 +959,15 @@ mod tests {
         sigma_w.insert(quorum(&["b", "d"]), 1.0);
 
         let sigma = qs.make_strategy(sigma_r, sigma_w).expect("ok");
-        assert!((sigma.sigma_r[&quorum(&["a", "b"])] - 0.25).abs() < 1e-10);
-        assert!((sigma.sigma_r[&quorum(&["c", "d"])] - 0.75).abs() < 1e-10);
+        assert!((sigma.sigma_r()[&quorum(&["a", "b"])] - 0.25).abs() < 1e-10);
+        assert!((sigma.sigma_r()[&quorum(&["c", "d"])] - 0.75).abs() < 1e-10);
         for wq in &[
             quorum(&["a", "c"]),
             quorum(&["a", "d"]),
             quorum(&["b", "c"]),
             quorum(&["b", "d"]),
         ] {
-            assert!((sigma.sigma_w[wq] - 0.25).abs() < 1e-10);
+            assert!((sigma.sigma_w()[wq] - 0.25).abs() < 1e-10);
         }
     }
 
@@ -1284,11 +1025,10 @@ mod tests {
         // node loads at fr=0.8
         let la = 0.8 / 50.0 * 0.75 + 0.2 / 10.0 * (0.1 + 0.2);
         let lb = 0.8 / 60.0 * 0.75 + 0.2 / 20.0 * (0.3 + 0.4);
-        let _lc = 0.8 / 70.0 * 0.25 + 0.2 / 30.0 * (0.1 + 0.3);
-        let _ld = 0.8 / 80.0 * 0.25 + 0.2 / 40.0 * (0.2 + 0.4);
+        let lc = 0.8 / 70.0 * 0.25 + 0.2 / 30.0 * (0.1 + 0.3);
+        let ld = 0.8 / 80.0 * 0.25 + 0.2 / 40.0 * (0.2 + 0.4);
 
-        let load_08 =
-            [la, lb, _lc, _ld].iter().copied().fold(0.0_f64, f64::max);
+        let load_08 = [la, lb, lc, ld].iter().copied().fold(0.0_f64, f64::max);
 
         let got_load = sigma.load(Some(&fr08), None).expect("ok");
         assert!(
@@ -1347,7 +1087,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::many_single_char_names)]
+    #[expect(clippy::many_single_char_names)]
     fn strategy_latency() {
         let a = node_with("a", 1.0, 1.0, 1);
         let b = node_with("b", 1.0, 1.0, 2);
@@ -1419,5 +1159,288 @@ mod tests {
         let qs = QuorumSystem::from_reads(n("a") + n("b"));
         let s = format!("{qs}");
         assert!(s.contains("QuorumSystem"));
+    }
+
+    // -- Parity with the Python reference (tests/test_quorum_system.py) --
+
+    fn s(secs: u64) -> Duration {
+        Duration::from_secs(secs)
+    }
+
+    fn fixed(fr: f64) -> Distribution {
+        Distribution::fixed(fr).expect("valid")
+    }
+
+    fn opt(
+        qs: &QuorumSystem<String>,
+        objective: Objective,
+        fr: f64,
+        limits: StrategyLimits,
+        f: usize,
+    ) -> Result<Strategy<String>> {
+        qs.strategy(objective, Some(&fixed(fr)), None, &limits, f)
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-6
+    }
+
+    fn python_grid() -> QuorumSystem<String> {
+        let a = node_with("a", 2.0, 1.0, 1);
+        let b = node_with("b", 2.0, 1.0, 2);
+        let c = node_with("c", 2.0, 1.0, 3);
+        let d = node_with("d", 2.0, 1.0, 4);
+        QuorumSystem::from_reads(
+            Expr::Node(a) * Expr::Node(b) + Expr::Node(c) * Expr::Node(d),
+        )
+    }
+
+    #[test]
+    fn python_parity_load_optimized() {
+        let qs = python_grid();
+        let none = StrategyLimits::default();
+        let net2 = StrategyLimits { network: Some(2.0), ..none };
+        let lat4 = StrategyLimits { latency: Some(s(4)), ..none };
+        for limits in [none, net2, lat4] {
+            for (fr, load) in [(1.0, 0.25), (0.0, 0.5)] {
+                let sigma = opt(&qs, Objective::Load, fr, limits, 0).unwrap();
+                let d = fixed(fr);
+                assert!(close(sigma.load(Some(&d), None).unwrap(), load));
+                let cap = sigma.capacity(Some(&d), None).unwrap();
+                assert!(close(cap, 1.0 / load));
+            }
+        }
+    }
+
+    #[test]
+    fn python_parity_network_and_latency_optimized() {
+        let qs = python_grid();
+        let none = StrategyLimits::default();
+        for (fr, limits) in [
+            (1.0, none),
+            (0.0, none),
+            (1.0, StrategyLimits { load: Some(0.25), ..none }),
+            (0.0, StrategyLimits { load: Some(0.5), ..none }),
+            (1.0, StrategyLimits { latency: Some(s(2)), ..none }),
+            (0.0, StrategyLimits { latency: Some(s(3)), ..none }),
+        ] {
+            let sigma = opt(&qs, Objective::Network, fr, limits, 0).unwrap();
+            let net = sigma.network_load(Some(&fixed(fr)), None).unwrap();
+            assert!(close(net, 2.0), "fr={fr} {limits:?}: {net}");
+        }
+        for (fr, lat, limits) in [
+            (1.0, 2, none),
+            (0.0, 3, none),
+            (1.0, 2, StrategyLimits { load: Some(1.0), ..none }),
+            (0.0, 3, StrategyLimits { load: Some(1.0), ..none }),
+            (1.0, 2, StrategyLimits { network: Some(2.0), ..none }),
+            (0.0, 3, StrategyLimits { network: Some(2.0), ..none }),
+        ] {
+            let sigma = opt(&qs, Objective::Latency, fr, limits, 0).unwrap();
+            let got = sigma.latency(Some(&fixed(fr)), None).unwrap();
+            assert!(close(got.as_secs_f64(), s(lat).as_secs_f64()));
+        }
+    }
+
+    #[test]
+    fn python_parity_one_resilient() {
+        let qs = python_grid();
+        let none = StrategyLimits::default();
+        for (fr, load) in [(1.0, 0.5), (0.0, 1.0)] {
+            let sigma = opt(&qs, Objective::Load, fr, none, 1).unwrap();
+            assert!(close(sigma.load(Some(&fixed(fr)), None).unwrap(), load));
+        }
+        for fr in [1.0, 0.0] {
+            let sigma = opt(&qs, Objective::Network, fr, none, 1).unwrap();
+            let net = sigma.network_load(Some(&fixed(fr)), None).unwrap();
+            assert!(close(net, 4.0));
+        }
+        for (fr, lat) in [(1.0, 2.0), (0.0, 3.0)] {
+            let sigma = opt(&qs, Objective::Latency, fr, none, 1).unwrap();
+            let got = sigma.latency(Some(&fixed(fr)), None).unwrap();
+            assert!(close(got.as_secs_f64(), lat));
+        }
+    }
+
+    #[test]
+    fn python_parity_illegal_and_unsatisfiable() {
+        let qs = python_grid();
+        let none = StrategyLimits::default();
+        for (objective, limits) in [
+            (Objective::Load, StrategyLimits { load: Some(1.0), ..none }),
+            (Objective::Network, StrategyLimits { network: Some(2.0), ..none }),
+            (
+                Objective::Latency,
+                StrategyLimits { latency: Some(s(5)), ..none },
+            ),
+        ] {
+            assert!(matches!(
+                opt(&qs, objective, 0.1, limits, 0),
+                Err(Error::InvalidQuorumSystem(_))
+            ));
+        }
+        for (objective, fr, limits) in [
+            (
+                Objective::Load,
+                0.0,
+                StrategyLimits { network: Some(1.5), ..none },
+            ),
+            (
+                Objective::Load,
+                0.0,
+                StrategyLimits { latency: Some(s(1)), ..none },
+            ),
+            (
+                Objective::Network,
+                1.0,
+                StrategyLimits {
+                    load: Some(0.25),
+                    latency: Some(s(2)),
+                    ..none
+                },
+            ),
+        ] {
+            assert_eq!(
+                opt(&qs, objective, fr, limits, 0).unwrap_err(),
+                Error::NoStrategyFound
+            );
+        }
+    }
+
+    #[test]
+    fn python_parity_uniform_one_resilient() {
+        // From test_uniform_strategy: reads = a*b + c*d + e*f, f = 1.
+        let qs = QuorumSystem::from_reads(
+            n("a") * n("b") + n("c") * n("d") + n("e") * n("f"),
+        );
+        let sigma = qs.uniform_strategy(1).unwrap();
+        let want_r = [
+            quorum(&["a", "b", "c", "d"]),
+            quorum(&["a", "b", "e", "f"]),
+            quorum(&["c", "d", "e", "f"]),
+        ];
+        assert_eq!(sigma.sigma_r().len(), want_r.len());
+        for q in &want_r {
+            assert!(close(sigma.sigma_r()[q], 1.0 / 3.0));
+        }
+        // Same as Python: the only 1-resilient write quorum is all nodes.
+        assert_eq!(sigma.sigma_w().len(), 1);
+        assert!(close(
+            sigma.sigma_w()[&quorum(&["a", "b", "c", "d", "e", "f"])],
+            1.0
+        ));
+    }
+
+    // -- Regression tests for 2.0 fixes --
+
+    #[test]
+    fn f_resilient_impossible_is_no_strategy() {
+        let qs = QuorumSystem::from_reads(n("a") * n("b"));
+        assert_eq!(qs.uniform_strategy(1).unwrap_err(), Error::NoStrategyFound);
+        assert_eq!(
+            opt(&qs, Objective::Load, 0.5, StrategyLimits::default(), 1)
+                .unwrap_err(),
+            Error::NoStrategyFound
+        );
+    }
+
+    #[test]
+    fn make_strategy_merges_unsorted_and_duplicate_keys() {
+        let qs = QuorumSystem::from_reads(n("a") + n("b"));
+        let mut r = BTreeMap::new();
+        r.insert(vec!["a".to_string(), "a".to_string()], 1.0);
+        r.insert(quorum(&["a"]), 1.0);
+        r.insert(quorum(&["b"]), 2.0);
+        r.insert(quorum(&["b", "a"]).into_iter().rev().collect(), 0.0);
+        let mut w = BTreeMap::new();
+        w.insert(vec!["b".to_string(), "a".to_string()], 1.0);
+        let sigma = qs.make_strategy(r, w).unwrap();
+        assert_eq!(sigma.sigma_r().len(), 2);
+        assert!(close(sigma.sigma_r()[&quorum(&["a"])], 0.5));
+        let load_a = sigma.node_load(&node("a"), Some(&fixed(1.0)), None);
+        assert!(close(load_a.unwrap(), 0.5));
+        assert_eq!(sigma.sigma_w().keys().next(), Some(&quorum(&["a", "b"])));
+    }
+
+    #[test]
+    fn make_strategy_rejects_bad_weights() {
+        let qs = QuorumSystem::from_reads(n("a") + n("b"));
+        let one = |q: &[&str], w: f64| {
+            let mut m = BTreeMap::new();
+            m.insert(quorum(q), w);
+            m
+        };
+        let w = || one(&["a", "b"], 1.0);
+        assert!(qs.make_strategy(BTreeMap::new(), w()).is_err());
+        assert!(qs.make_strategy(one(&["a"], 0.0), w()).is_err());
+        assert!(qs.make_strategy(one(&["a"], f64::NAN), w()).is_err());
+        assert!(qs.make_strategy(one(&["a"], f64::INFINITY), w()).is_err());
+        assert!(qs.make_strategy(one(&["a"], 1.0), one(&["a"], 1.0)).is_err());
+        assert!(qs
+            .make_strategy(one(&["a"], 1.0), one(&["a", "b"], -1.0))
+            .is_err());
+    }
+
+    #[test]
+    fn node_metrics_use_system_capacities() {
+        let a = node_with("a", 2.0, 2.0, 1);
+        let qs = QuorumSystem::from_reads(Expr::Node(a) + n("b"));
+        let sigma = qs.uniform_strategy(0).unwrap();
+        let fr = fixed(1.0);
+        // Pass a bare Node: capacity 2 must still be used for "a".
+        let la = sigma.node_load(&node("a"), Some(&fr), None).unwrap();
+        assert!(close(la, 0.25));
+        let lb = sigma.node_load(&node("b"), Some(&fr), None).unwrap();
+        assert!(close(lb, 0.5));
+        let ua = sigma.node_utilization(&node("a"), Some(&fr), None).unwrap();
+        assert!(close(ua, 0.5));
+        let tb = sigma.node_throughput(&node("b"), Some(&fr), None).unwrap();
+        assert!(close(tb, 1.0));
+        assert!(close(
+            sigma.node_load(&node("zz"), Some(&fr), None).unwrap(),
+            0.0
+        ));
+        assert!(sigma.load(None, None).is_err());
+        assert!(sigma.capacity(Some(&fr), Some(&fr)).is_err());
+        assert!(sigma.network_load(None, None).is_err());
+        assert!(sigma.latency(None, None).is_err());
+        assert!(sigma.node_load(&node("a"), None, None).is_err());
+        assert!(sigma.node_utilization(&node("a"), None, None).is_err());
+        assert!(sigma.node_throughput(&node("a"), None, None).is_err());
+    }
+
+    #[test]
+    fn accessors_and_sampling() {
+        let qs = QuorumSystem::from_reads(n("a") * n("b") + n("c"));
+        assert_eq!(qs.reads().to_string(), "((a * b) + c)");
+        assert_eq!(qs.writes().to_string(), "((a + b) * c)");
+        assert_eq!(qs.node(&"a".to_string()).unwrap().x(), "a");
+        assert!(qs.node(&"zz".to_string()).is_err());
+        let sigma = qs.uniform_strategy(0).unwrap();
+        assert_eq!(sigma.quorum_system().elements(), qs.elements());
+        for _ in 0..20 {
+            assert!(qs.is_read_quorum(&sigma.get_read_quorum()));
+            assert!(qs.is_write_quorum(&sigma.get_write_quorum()));
+        }
+        let shown = sigma.to_string();
+        assert!(shown.contains("{a, b}: 0.5000"), "{shown}");
+    }
+
+    #[test]
+    fn strategy_with_write_fraction_and_weighted() {
+        let qs = QuorumSystem::from_reads(n("a") + n("b") + n("c"));
+        let none = StrategyLimits::default();
+        let w = fixed(0.25);
+        let by_w =
+            qs.strategy(Objective::Load, None, Some(&w), &none, 0).unwrap();
+        let by_r = opt(&qs, Objective::Load, 0.75, none, 0).unwrap();
+        let l1 = by_w.load(None, Some(&w)).unwrap();
+        let l2 = by_r.load(Some(&fixed(0.75)), None).unwrap();
+        assert!(close(l1, l2));
+        let d = Distribution::weighted(&[(0.0, 1.0), (1.0, 1.0)]).unwrap();
+        let sigma =
+            qs.strategy(Objective::Load, Some(&d), None, &none, 0).unwrap();
+        assert!(sigma.load(Some(&d), None).unwrap() > 0.0);
+        assert!(qs.strategy(Objective::Load, None, None, &none, 0).is_err());
     }
 }
