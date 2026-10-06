@@ -1,5 +1,6 @@
 # Forgejo Actions on Codeberg's hosted runners (codeberg-* labels).
-# Jobs are split to fit the runners' time limits.
+# Jobs are split to fit the runners' time limits. The official rust images
+# have no node, so checkout is a plain git clone instead of a JS action.
 name: CI
 
 on:
@@ -21,7 +22,11 @@ jobs:
     container:
       image: docker.io/library/rust:1-trixie
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
+      - name: Checkout
+        run: |
+          git clone -q --depth 1 "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" .
+          git fetch -q --depth 1 origin "${GITHUB_SHA}"
+          git checkout -q "${GITHUB_SHA}"
       - run: apt-get update -qq && apt-get install -y -qq coinor-libcbc-dev
       - run: rustup component add rustfmt clippy
       - run: cargo fmt --all -- --check
@@ -37,7 +42,11 @@ jobs:
     container:
       image: docker.io/library/${{ matrix.image }}
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
+      - name: Checkout
+        run: |
+          git clone -q --depth 1 "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" .
+          git fetch -q --depth 1 origin "${GITHUB_SHA}"
+          git checkout -q "${GITHUB_SHA}"
       - if: matrix.solver == 'cbc'
         run: apt-get update -qq && apt-get install -y -qq coinor-libcbc-dev
       - run: cargo test --no-default-features --features ${{ matrix.solver }} --lib --tests
@@ -47,7 +56,11 @@ jobs:
     container:
       image: docker.io/library/rust:1-trixie
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
+      - name: Checkout
+        run: |
+          git clone -q --depth 1 "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" .
+          git fetch -q --depth 1 origin "${GITHUB_SHA}"
+          git checkout -q "${GITHUB_SHA}"
       - run: apt-get update -qq && apt-get install -y -qq coinor-libcbc-dev python3
       - run: rustup toolchain install nightly --profile minimal -c llvm-tools-preview
       - run: |
@@ -62,7 +75,11 @@ jobs:
     container:
       image: docker.io/library/rust:1-trixie
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
+      - name: Checkout
+        run: |
+          git clone -q --depth 1 "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" .
+          git fetch -q --depth 1 origin "${GITHUB_SHA}"
+          git checkout -q "${GITHUB_SHA}"
       - run: rustup toolchain install nightly --profile minimal
       - run: |
           curl -LsSf https://github.com/rust-lang/mdBook/releases/download/v0.5.4/mdbook-v0.5.4-x86_64-unknown-linux-gnu.tar.gz \
