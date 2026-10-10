@@ -207,18 +207,41 @@ impl<T: Element> QuorumSystem<T> {
         self.reads.dup_free() && self.writes.dup_free()
     }
 
-    /// Read and write quorum candidates for `f`-resilient strategies.
-    fn candidate_quorums(&self, f: usize) -> Result<(Quorums<T>, Quorums<T>)> {
-        if f == 0 {
-            return Ok((
-                minimize(self.read_quorums().collect()),
-                minimize(self.write_quorums().collect()),
-            ));
+    /// Read and write candidates excluding known failures, with resilience
+    /// to `f` further failures.
+    fn candidate_quorums(
+        &self,
+        f: usize,
+        failed: &HashSet<T>,
+    ) -> Result<(Quorums<T>, Quorums<T>)> {
+        for x in failed {
+            self.node(x)?;
         }
-        let mut xs: Vec<T> = self.elements().into_iter().collect();
-        xs.sort();
-        let rq = f_resilient_quorums(f, &xs, &self.reads);
-        let wq = f_resilient_quorums(f, &xs, &self.writes);
+        let (rq, wq) = if f == 0 {
+            (
+                minimize(
+                    self.read_quorums()
+                        .filter(|q| q.is_disjoint(failed))
+                        .collect(),
+                ),
+                minimize(
+                    self.write_quorums()
+                        .filter(|q| q.is_disjoint(failed))
+                        .collect(),
+                ),
+            )
+        } else {
+            let mut xs: Vec<T> = self
+                .elements()
+                .into_iter()
+                .filter(|x| !failed.contains(x))
+                .collect();
+            xs.sort();
+            (
+                f_resilient_quorums(f, &xs, &self.reads),
+                f_resilient_quorums(f, &xs, &self.writes),
+            )
+        };
         if rq.is_empty() || wq.is_empty() {
             return Err(Error::NoStrategyFound);
         }
@@ -233,7 +256,7 @@ impl<T: Element> QuorumSystem<T> {
     /// Returns [`Error::NoStrategyFound`] if there are no `f`-resilient read
     /// or write quorums.
     pub fn uniform_strategy(&self, f: usize) -> Result<Strategy<T>> {
-        let (rq, wq) = self.candidate_quorums(f)?;
+        let (rq, wq) = self.candidate_quorums(f, &HashSet::new())?;
         let uniform = |qs: Vec<HashSet<T>>| -> BTreeMap<Quorum<T>, f64> {
             let p = 1.0 / len_f64(qs.len());
             qs.iter().map(|q| (to_quorum(q), p)).collect()
@@ -268,6 +291,7 @@ impl<T: Element> QuorumSystem<T> {
     /// `f`-resilient quorums (quorums that still contain a quorum after any
     /// `f` of their nodes fail). Exactly one of `read_fraction` and
     /// `write_fraction` must be `Some`.
+    /// To exclude known failed nodes, use [`Self::strategy_with_failures`].
     ///
     /// # Errors
     ///
@@ -285,9 +309,47 @@ impl<T: Element> QuorumSystem<T> {
         limits: &StrategyLimits,
         f: usize,
     ) -> Result<Strategy<T>> {
+        self.strategy_with_failures(
+            objective,
+            read_fraction,
+            write_fraction,
+            limits,
+            f,
+            &HashSet::new(),
+        )
+    }
+
+    /// Compute the optimal strategy excluding known failed nodes.
+    ///
+    /// Like [`Self::strategy`], but no selected quorum contacts a node in
+    /// `failed`. The original read and write rules, node capacities, and
+    /// latencies are preserved. `f` counts further failures among the
+    /// selected nodes; known failures do not consume this allowance.
+    /// An empty `failed` set is equivalent to [`Self::strategy`].
+    ///
+    /// Exactly one of `read_fraction` and `write_fraction` must be `Some`.
+    /// Recompute the strategy when the known failed set changes.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::InvalidQuorumSystem`] if `failed` contains an unknown
+    ///   node or the limit matching `objective` is set.
+    /// - [`Error::InvalidDistribution`] for a bad read/write fraction.
+    /// - [`Error::NoStrategyFound`] if the limits cannot be met or there
+    ///   are no surviving `f`-resilient read or write quorums.
+    /// - [`Error::LpError`] if the solver fails for another reason.
+    pub fn strategy_with_failures(
+        &self,
+        objective: Objective,
+        read_fraction: Option<&Distribution>,
+        write_fraction: Option<&Distribution>,
+        limits: &StrategyLimits,
+        f: usize,
+        failed: &HashSet<T>,
+    ) -> Result<Strategy<T>> {
         limits.check(objective)?;
         let d = distribution::canonicalize_rw(read_fraction, write_fraction)?;
-        let (rq, wq) = self.candidate_quorums(f)?;
+        let (rq, wq) = self.candidate_quorums(f, failed)?;
         self.lp_optimal_strategy(&rq, &wq, &d, objective, limits)
     }
 
@@ -507,8 +569,10 @@ impl<T: Element> std::fmt::Display for QuorumSystem<T> {
 
 /// A probability distribution over read quorums and over write quorums.
 ///
-/// Built by [`QuorumSystem::strategy`], [`QuorumSystem::uniform_strategy`],
-/// or [`QuorumSystem::make_strategy`]; probabilities always sum to 1.
+/// Built by [`QuorumSystem::strategy`],
+/// [`QuorumSystem::strategy_with_failures`],
+/// [`QuorumSystem::uniform_strategy`], or [`QuorumSystem::make_strategy`];
+/// probabilities always sum to 1.
 #[derive(Debug, Clone)]
 pub struct Strategy<T: Element> {
     sigma_r: BTreeMap<Quorum<T>, f64>,
@@ -1329,6 +1393,185 @@ mod tests {
             sigma.sigma_w()[&quorum(&["a", "b", "c", "d", "e", "f"])],
             1.0
         ));
+    }
+
+    // -- Known failures --
+
+    #[test]
+    fn known_failures_preserve_quorum_rules() {
+        let qs = QuorumSystem::from_reads(n("a") * n("b") + n("c") * n("d"));
+        let fr = fixed(0.75);
+        let failed = set(&["a"]);
+        let sigma = qs
+            .strategy_with_failures(
+                Objective::Load,
+                Some(&fr),
+                None,
+                &StrategyLimits::default(),
+                0,
+                &failed,
+            )
+            .unwrap();
+        assert!(close(sigma.load(Some(&fr), None).unwrap(), 0.875));
+        assert!(close(
+            sigma.node_load(&node("a"), Some(&fr), None).unwrap(),
+            0.0
+        ));
+        assert!(close(sigma.sigma_r()[&quorum(&["c", "d"])], 1.0));
+        assert!(close(sigma.sigma_w()[&quorum(&["b", "c"])], 0.5));
+        assert!(close(sigma.sigma_w()[&quorum(&["b", "d"])], 0.5));
+        assert_eq!(
+            quorum_set(sigma.quorum_system().read_quorums()),
+            quorum_set(qs.read_quorums())
+        );
+        assert_eq!(
+            quorum_set(sigma.quorum_system().write_quorums()),
+            quorum_set(qs.write_quorums())
+        );
+        for (weights, expr, opposite) in [
+            (sigma.sigma_r(), qs.reads(), qs.writes()),
+            (sigma.sigma_w(), qs.writes(), qs.reads()),
+        ] {
+            assert!(close(weights.values().sum(), 1.0));
+            for q in weights.keys().map(|q| to_set(q)) {
+                assert!(q.is_disjoint(&failed));
+                assert!(expr.is_quorum(&q));
+                assert!(opposite.quorums().all(|other| !q.is_disjoint(&other)));
+            }
+        }
+    }
+
+    #[test]
+    fn known_failures_match_threshold_bounds() {
+        let reads =
+            crate::expr::majority(vec![n("a"), n("b"), n("c"), n("d"), n("e")])
+                .unwrap();
+        let qs = QuorumSystem::from_reads(reads);
+        let fr = fixed(0.5);
+        for failed_nodes in ["a", "b", "c", "d", "e"].into_iter().powerset() {
+            let failed = set(&failed_nodes);
+            let survivors = 5 - failed.len();
+            for f in 0..=2 {
+                let result = qs.strategy_with_failures(
+                    Objective::Load,
+                    Some(&fr),
+                    None,
+                    &StrategyLimits::default(),
+                    f,
+                    &failed,
+                );
+                let size = 3 + f;
+                if survivors < size {
+                    assert_eq!(result.unwrap_err(), Error::NoStrategyFound);
+                    continue;
+                }
+                let sigma = result.unwrap();
+                let load = len_f64(size) / len_f64(survivors);
+                assert!(close(sigma.load(Some(&fr), None).unwrap(), load));
+                for (weights, expr) in [
+                    (sigma.sigma_r(), qs.reads()),
+                    (sigma.sigma_w(), qs.writes()),
+                ] {
+                    assert!(close(weights.values().sum(), 1.0));
+                    for q in weights.keys().map(|q| to_set(q)) {
+                        assert_eq!(q.len(), size);
+                        assert!(q.is_disjoint(&failed));
+                        for further in q.iter().combinations(f) {
+                            let alive = q
+                                .iter()
+                                .filter(|x| !further.contains(x))
+                                .cloned()
+                                .collect();
+                            assert!(expr.is_quorum(&alive));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn known_failures_reject_unknown_nodes() {
+        let qs = python_grid();
+        assert!(matches!(
+            qs.strategy_with_failures(
+                Objective::Load,
+                Some(&fixed(0.5)),
+                None,
+                &StrategyLimits::default(),
+                0,
+                &set(&["missing"]),
+            ),
+            Err(Error::InvalidQuorumSystem(_))
+        ));
+    }
+
+    #[test]
+    fn known_failures_report_unavailable_quorums() {
+        let qs = QuorumSystem::from_reads(n("a") + n("b"));
+        for failed in [set(&["a"]), set(&["a", "b"])] {
+            for f in [0, 1] {
+                assert_eq!(
+                    qs.strategy_with_failures(
+                        Objective::Load,
+                        Some(&fixed(0.5)),
+                        None,
+                        &StrategyLimits::default(),
+                        f,
+                        &failed,
+                    )
+                    .unwrap_err(),
+                    Error::NoStrategyFound
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn known_failures_respect_metrics_and_limits() {
+        let qs = python_grid();
+        let fw = fixed(0.5);
+        let failed = set(&["a"]);
+        let none = StrategyLimits::default();
+        for (objective, load, latency, limits) in [
+            (Objective::Load, 0.5, 3.75, none),
+            (
+                Objective::Network,
+                0.5,
+                3.75,
+                StrategyLimits { load: Some(0.5), ..none },
+            ),
+            (Objective::Latency, 0.75, 3.5, none),
+        ] {
+            let sigma = qs
+                .strategy_with_failures(
+                    objective,
+                    None,
+                    Some(&fw),
+                    &limits,
+                    0,
+                    &failed,
+                )
+                .unwrap();
+            assert!(close(sigma.load(None, Some(&fw)).unwrap(), load));
+            assert!(close(sigma.network_load(None, Some(&fw)).unwrap(), 2.0));
+            assert!(close(
+                sigma.latency(None, Some(&fw)).unwrap().as_secs_f64(),
+                latency
+            ));
+        }
+        assert_eq!(
+            qs.strategy_with_failures(
+                Objective::Network,
+                None,
+                Some(&fw),
+                &StrategyLimits { load: Some(0.4), ..none },
+                0,
+                &failed,
+            )
+            .unwrap_err(),
+            Error::NoStrategyFound
+        );
     }
 
     // -- Regression tests for 2.0 fixes --

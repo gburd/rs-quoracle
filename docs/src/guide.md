@@ -130,6 +130,40 @@ With `f > 0`, strategies only use quorums that remain quorums after any
 `f` of their nodes fail, so an operation can tolerate `f` slow or failed
 nodes without picking a new quorum. This costs capacity.
 
+## Known failed nodes
+
+When failures are already known, `strategy_with_failures` optimizes using
+only surviving nodes. It keeps the original read and write rules, node
+capacities, and latencies. `f` still specifies how many further failures
+each selected quorum must tolerate.
+
+```rust
+use quoracle::hashbrown::HashSet;
+use quoracle::{Distribution, Expr, Node, Objective, QuorumSystem, StrategyLimits};
+
+# fn main() -> Result<(), quoracle::Error> {
+let [a, b, c, d] = ["a", "b", "c", "d"].map(|x| Expr::Node(Node::new(x)));
+let grid = QuorumSystem::from_reads(a * b + c * d);
+let fr = Distribution::fixed(0.75)?;
+let failed = HashSet::from(["a"]);
+let s = grid.strategy_with_failures(
+    Objective::Load, Some(&fr), None, &StrategyLimits::default(), 0, &failed,
+)?;
+
+// Reads use {c, d}; writes alternate between {b, c} and {b, d}.
+assert!((s.load(Some(&fr), None)? - 0.875).abs() < 1e-6);
+assert_eq!(s.node_load(&Node::new("a"), Some(&fr), None)?, 0.0);
+assert!(s.get_read_quorum().is_disjoint(&failed));
+assert!(s.get_write_quorum().is_disjoint(&failed));
+# Ok(())
+# }
+```
+
+Recompute the strategy when the known failed set changes. An empty set is
+equivalent to `strategy`. Unknown node identifiers return
+`Error::InvalidQuorumSystem`; losing all read or write quorums, or being
+unable to tolerate `f` further failures, returns `Error::NoStrategyFound`.
+
 ## Search
 
 `search` tries every quorum system over the given nodes and returns the
