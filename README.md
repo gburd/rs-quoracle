@@ -132,6 +132,13 @@ the mix changes over time, use `Distribution::weighted(&[(0.9, 3.0), (0.5,
 to bound the other metrics, and `f > 0` to only use quorums that still work
 after `f` of their nodes fail (useful to avoid retries).
 
+For known failures, use `strategy_with_failures(objective, read_fraction,
+write_fraction, &limits, f, &failed)`, where `failed` is a
+`quoracle::hashbrown::HashSet` of node identifiers. The strategy avoids
+those nodes while preserving the original quorum rules; `f` counts
+further failures. Recompute when the failed set changes. See the
+[known-failures example](docs/src/guide.md#known-failed-nodes).
+
 **5. Use the result.** Either sample quorums at runtime
 (`get_read_quorum`), or read the probabilities (`sigma_r()` / `sigma_w()`)
 and feed them into your own router. Per-node metrics (`node_load`,

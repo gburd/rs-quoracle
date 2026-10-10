@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `QuorumSystem::strategy_with_failures` optimizes routing around known
+  failed nodes while retaining the original quorum rules and tolerance
+  for `f` further failures.
+
 ## [2.0.0] - 2026-10-06
 
 2.0 fixes correctness bugs and makes invalid states unrepresentable, which
