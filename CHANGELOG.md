@@ -5,12 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.0] - 2026-10-28
 
 ### Added
-- `QuorumSystem::strategy_with_failures` optimizes routing around known
-  failed nodes while retaining the original quorum rules and tolerance
-  for `f` further failures.
+- `QuorumSystem::strategy_with_failures` computes the optimal strategy
+  when some nodes are known to be down (an outage, or planned
+  maintenance). Selected quorums avoid the failed nodes, the original read
+  and write rules, capacities, and latencies are kept, and `f` still sets
+  how many further failures each quorum must tolerate. An empty failed set
+  behaves like `strategy`. Contributed by Denys Zhak
+  ([#1](https://github.com/gburd/rs-quoracle/pull/1)).
+
+### Changed
+- Refreshed `Cargo.lock` to the latest compatible dependency versions.
 
 ## [2.0.0] - 2026-10-06
 
@@ -219,6 +226,7 @@ Otherwise, Microlp works as a drop-in replacement with no code changes needed.
 - Support for heterogeneous nodes (capacity, latency)
 - F-resilient quorum enumeration
 
+[2.1.0]: https://codeberg.org/gregburd/rs-quoracle/releases/tag/v2.1.0
 [2.0.0]: https://codeberg.org/gregburd/rs-quoracle/releases/tag/v2.0.0
 [1.4.0]: https://codeberg.org/gregburd/rs-quoracle/releases/tag/v1.4.0
 [1.3.0]: https://codeberg.org/gregburd/rs-quoracle/releases/tag/v1.3.0
